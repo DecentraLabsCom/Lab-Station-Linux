@@ -1,0 +1,42 @@
+name: Linux agent build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run unit tests with race detection and coverage
+        run: go test -race -cover ./...
+      - name: Smoke test amd64 and arm64 release bundles
+        run: sh packaging/test-build.sh
+      - name: Smoke test installer in a disposable container
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh packaging/test-install.sh
+      - name: Exercise privileged setup in a disposable container
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh packaging/test-setup.sh
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Compile native Linux commands
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: go build ./...

@@ -1,0 +1,20 @@
+[station]
+name = "lab-linux-01"
+profile = "dedicated"
+version = "0.1.0"
+state_dir = "/var/lib/decentralabs/lab-station/data"
+config_dir = "/etc/decentralabs/lab-station"
+log_dir = "/var/log/decentralabs/lab-station"
+management_user = "labstation-ops"
+management_port = 22
+transport = "ssh"
+supervisor = "auto"
+guard_grace_seconds = 30
+allow_local_session_eviction = false
+
+[application]
+id = "lab-app"
+command = "/opt/lab/apps/controller"
+args = ["--remote-session"]
+user = "labuser"
+close_timeout_seconds = 15

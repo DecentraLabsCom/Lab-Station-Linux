@@ -1,0 +1,140 @@
+{
+  "source": "Lab Gateway/docs/station-test-parity.json",
+  "version": 1,
+  "portableStatus": {
+    "schemaVersion": "3.0.0",
+    "requiredFields": [
+      "schemaVersion",
+      "timestamp",
+      "host",
+      "version",
+      "platform",
+      "profile",
+      "management",
+      "remoteAccess",
+      "summary",
+      "readiness",
+      "sessions",
+      "operations",
+      "localModeEnabled"
+    ],
+    "profiles": ["dedicated", "hybrid", "fmu-only"],
+    "summaryStates": ["ready", "degraded", "unavailable", "unknown"],
+    "readinessCapabilities": ["physicalLab", "wake", "fmu"],
+    "sessionKinds": ["local", "management", "remote", "service", "unknown"],
+    "sessionRequiredFields": ["kind", "active", "evictable"]
+  },
+  "platforms": {
+    "windows": {
+      "os": "windows",
+      "managementTransport": "winrm"
+    },
+    "linux": {
+      "os": "linux",
+      "managementTransport": "ssh"
+    }
+  },
+  "sessionSafety": {
+    "unavailableInventory": "fail-closed",
+    "localSession": "protect-unless-authorized"
+  },
+  "power": {
+    "action": "shutdown",
+    "requireWake": true,
+    "wakeReady": false,
+    "expected": "blocked"
+  },
+  "recovery": {
+    "safeStationExpected": "no-reboot"
+  },
+  "sharedScenarios": [
+    {
+      "id": "status.v3-required-envelope",
+      "windows": {
+        "file": "labstation/tests/TelemetryTests.ahk",
+        "test": "TestV3EnvelopeHasPortableRequiredFields"
+      },
+      "linux": {
+        "file": "internal/agent/daemon_test.go",
+        "test": "TestDaemonPublishesBothContractSnapshotsAndStopsOnContextCancellation"
+      }
+    },
+    {
+      "id": "sessions.unavailable-inventory-fails-closed",
+      "windows": {
+        "file": "labstation/tests/SessionGuardTests.ahk",
+        "test": "TestSessionQueryFailureIsReported"
+      },
+      "linux": {
+        "file": "internal/agent/agent_test.go",
+        "test": "TestPrepareSessionFailsClosedWhenSessionInventoryUnavailable"
+      }
+    },
+    {
+      "id": "sessions.protect-local-user-unless-authorized",
+      "windows": {
+        "file": "labstation/tests/SessionGuardTests.ahk",
+        "test": "TestNoConflictingSessionsDoesNotWaitOrLogoff"
+      },
+      "linux": {
+        "file": "internal/agent/agent_test.go",
+        "test": "TestPrepareSessionRefusesUnsafeProfilesAndReleasesHybridSessions"
+      }
+    },
+    {
+      "id": "power.required-wake-blocks-shutdown",
+      "windows": {
+        "file": "labstation/tests/PowerManagerTests.ahk",
+        "test": "TestWakeIssuesCanBlockPowerAction"
+      },
+      "linux": {
+        "file": "internal/agent/agent_test.go",
+        "test": "TestPowerHonorsWakeRequirementAndHibernateCapability"
+      }
+    },
+    {
+      "id": "recovery.gates-unnecessary-reboot",
+      "windows": {
+        "file": "labstation/tests/RecoveryTests.ahk",
+        "test": "TestHealthyStateSkipsReboot"
+      },
+      "linux": {
+        "file": "internal/agent/agent_test.go",
+        "test": "TestRecoveryRequiresMarkerAndHonorsSessionLocalModeAndCooldownGates"
+      }
+    },
+    {
+      "id": "commands.reject-unsupported-request",
+      "windows": {
+        "file": "labstation/tests/CommandQueueTests.ahk",
+        "test": "TestUnsupportedCommandProducesHardFailure"
+      },
+      "linux": {
+        "file": "internal/agent/dispatcher_test.go",
+        "test": "TestDispatchRejectsMalformedUnknownAndMultiObjectRequests"
+      }
+    },
+    {
+      "id": "services.report-platform-service-state",
+      "windows": {
+        "file": "labstation/tests/ServiceManagerTests.ahk",
+        "test": "TestGetStatusParsesHealthyTask"
+      },
+      "linux": {
+        "file": "internal/host/runtime_more_test.go",
+        "test": "TestSystemdAndOpenRCStateAndActionAdapters"
+      }
+    },
+    {
+      "id": "operations.persist-result",
+      "windows": {
+        "file": "labstation/tests/ReservationFlowTests.ahk",
+        "test": "TestReleaseSessionFailureStillRecordsFailure"
+      },
+      "linux": {
+        "file": "internal/agent/agent_test.go",
+        "test": "TestOperationRecordsAndAtomicArtifactsStayInsideStateDirectory"
+      }
+    }
+  ]
+}

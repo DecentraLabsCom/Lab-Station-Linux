@@ -60,12 +60,12 @@ args = ["--label=course,#1", "quote \\\"ok\\\"", "--color=blue,green"]
 
 func TestLoadRejectsMalformedAndUnknownSettings(t *testing.T) {
 	cases := map[string]string{
-		"missing equals":       "[station]\nprofile \"hybrid\"\n",
-		"unknown section":      "[other]\nname = \"x\"\n",
-		"unknown setting":      "[station]\nroot_command = \"bash\"\n",
-		"wrong type":           "[station]\nmanagement_port = \"22\"\n",
+		"missing equals":        "[station]\nprofile \"hybrid\"\n",
+		"unknown section":       "[other]\nname = \"x\"\n",
+		"unknown setting":       "[station]\nroot_command = \"bash\"\n",
+		"wrong type":            "[station]\nmanagement_port = \"22\"\n",
 		"invalid string escape": "[station]\nname = \"bad\\q\"\n",
-		"invalid array item":   "[application]\nargs = [22]\n",
+		"invalid array item":    "[application]\nargs = [22]\n",
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -78,20 +78,20 @@ func TestLoadRejectsMalformedAndUnknownSettings(t *testing.T) {
 
 func TestLoadRejectsUnsafeAndOutOfRangeSettings(t *testing.T) {
 	cases := map[string]string{
-		"unsupported profile":       "[station]\nprofile = \"desktop\"\n",
-		"privileged ssh user":        "[station]\nmanagement_user = \"root\"\n",
-		"invalid ssh port low":       "[station]\nmanagement_port = 0\n",
-		"invalid ssh port high":      "[station]\nmanagement_port = 65536\n",
-		"state path traversal":       "[station]\nstate_dir = \"/var/lib/decentralabs/lab-station/../../etc\"\n",
-		"external state path":        "[station]\nstate_dir = \"/tmp/lab\"\n",
-		"alternate config path":      "[station]\nconfig_dir = \"/tmp\"\n",
-		"relative log path":          "[station]\nlog_dir = \"logs\"\n",
-		"shell command":              "[application]\ncommand = \"/bin/sh\"\n",
+		"unsupported profile":          "[station]\nprofile = \"desktop\"\n",
+		"privileged ssh user":          "[station]\nmanagement_user = \"root\"\n",
+		"invalid ssh port low":         "[station]\nmanagement_port = 0\n",
+		"invalid ssh port high":        "[station]\nmanagement_port = 65536\n",
+		"state path traversal":         "[station]\nstate_dir = \"/var/lib/decentralabs/lab-station/../../etc\"\n",
+		"external state path":          "[station]\nstate_dir = \"/tmp/lab\"\n",
+		"alternate config path":        "[station]\nconfig_dir = \"/tmp\"\n",
+		"relative log path":            "[station]\nlog_dir = \"logs\"\n",
+		"shell command":                "[application]\ncommand = \"/bin/sh\"\n",
 		"shell metacharacter argument": "[application]\nargs = [\"--run=$(touch /tmp/pwned)\"]\n",
-		"newline argument":           "[application]\nargs = [\"line\\nnext\"]\n",
-		"guard below zero":           "[station]\nguard_grace_seconds = -1\n",
-		"guard above limit":          "[station]\nguard_grace_seconds = 91\n",
-		"application timeout zero":   "[application]\nclose_timeout_seconds = 0\n",
+		"newline argument":             "[application]\nargs = [\"line\\nnext\"]\n",
+		"guard below zero":             "[station]\nguard_grace_seconds = -1\n",
+		"guard above limit":            "[station]\nguard_grace_seconds = 91\n",
+		"application timeout zero":     "[application]\nclose_timeout_seconds = 0\n",
 		"application timeout too high": "[application]\nclose_timeout_seconds = 301\n",
 	}
 	for name, content := range cases {

@@ -4,6 +4,22 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=${VERSION:-$(cat "$ROOT/VERSION")}
 OUTPUT_DIR=${OUTPUT_DIR:-$ROOT/dist}
+PINNED_FMU_EXECUTOR_VERSION=$(tr -d '\r\n' < "$ROOT/internal/agent/fmu_executor_version.txt")
+FMU_EXECUTOR_SOURCE_DIR=
+FMU_EXECUTOR_VERSION_JSON=null
+if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
+    FMU_EXECUTOR_SOURCE_DIR=$(CDPATH= cd -- "$FMU_EXECUTOR_SOURCE" && pwd)
+    test -d "$FMU_EXECUTOR_SOURCE_DIR/app" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/app"
+    test -f "$FMU_EXECUTOR_SOURCE_DIR/app/main.py" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/app/main.py"
+    test -f "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt"
+    test -f "$FMU_EXECUTOR_SOURCE_DIR/VERSION" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/VERSION"
+    FMU_EXECUTOR_VERSION=$(tr -d '\r\n' < "$FMU_EXECUTOR_SOURCE_DIR/VERSION")
+    if [ "$FMU_EXECUTOR_VERSION" != "$PINNED_FMU_EXECUTOR_VERSION" ]; then
+        echo "FMU Executor source version $FMU_EXECUTOR_VERSION does not match the pinned station version $PINNED_FMU_EXECUTOR_VERSION" >&2
+        exit 1
+    fi
+    FMU_EXECUTOR_VERSION_JSON="\"$FMU_EXECUTOR_VERSION\""
+fi
 mkdir -p "$OUTPUT_DIR"
 
 for GOARCH_VALUE in amd64 arm64; do
@@ -31,13 +47,10 @@ for GOARCH_VALUE in amd64 arm64; do
     install -m 0644 "$ROOT/config/station.toml" "$PAYLOAD/etc/decentralabs/lab-station/station.toml.example"
     install -m 0644 "$ROOT/README.md" "$PAYLOAD/usr/share/doc/lab-station-linux/README.md"
     if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
-        source_dir=$(CDPATH= cd -- "$FMU_EXECUTOR_SOURCE" && pwd)
-        test -f "$source_dir/requirements.txt"
-        test -f "$source_dir/app/main.py"
         mkdir -p "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source"
-        cp -R "$source_dir/app" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/"
-        install -m 0644 "$source_dir/requirements.txt" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/requirements.txt"
-        install -m 0644 "$source_dir/VERSION" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/VERSION"
+        cp -R "$FMU_EXECUTOR_SOURCE_DIR/app" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/"
+        install -m 0644 "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/requirements.txt"
+        install -m 0644 "$FMU_EXECUTOR_SOURCE_DIR/VERSION" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/VERSION"
     fi
     ARCHIVE="$OUTPUT_DIR/lab-station-linux-$VERSION-linux-$GOARCH_VALUE.tar.gz"
     BUNDLE_ROOT=$(mktemp -d)
@@ -58,7 +71,7 @@ for GOARCH_VALUE in amd64 arm64; do
     fi
     signed=false
     if [ -n "${MINISIGN_SECRET_KEY:-}" ]; then signed=true; fi
-    printf '{"version":"%s","os":"linux","arch":"%s","contractVersion":"3.0.0","signed":%s}\n' \
-        "$VERSION" "$GOARCH_VALUE" "$signed" \
+    printf '{"version":"%s","os":"linux","arch":"%s","contractVersion":"3.0.0","fmuExecutorVersion":%s,"signed":%s}\n' \
+        "$VERSION" "$GOARCH_VALUE" "$FMU_EXECUTOR_VERSION_JSON" "$signed" \
         > "$OUTPUT_DIR/lab-station-linux-$VERSION-linux-$GOARCH_VALUE.manifest.json"
 done

@@ -49,8 +49,10 @@ publish the corresponding public key separately.
 
 ## Install
 
-The package installs binaries and defaults only. The station's SSH key and
-profile are deliberately supplied by the operator:
+Extract the portable release archive and run `install.sh` from the extracted
+bundle root, which contains `install.sh` and `payload/`. The installer places
+the binaries and defaults; the operator supplies the station's SSH key and
+profile:
 
 ```sh
 sudo ./install.sh --profile dedicated --management-public-key 'ssh-ed25519 AAAA...'
@@ -76,7 +78,9 @@ sudo ./install.sh --profile fmu-only \
   --fmu-executor-source /path/to/FMU-Executor
 ```
 
-Replace the illustrative source path with the versioned FMU Executor checkout.
+Replace the illustrative source path with the FMU Executor source at the pinned
+version in `internal/agent/fmu_executor_version.txt`; package builds reject a
+different version and record the included FMU Executor version in the manifest.
 The source tree is copied into `/opt/decentralabs/fmu-executor`; FMUs are stored
 under `/var/lib/decentralabs/fmu-executor/fmu-data`. Setup creates a Python
 virtual environment and installs the pinned project requirements. Use an

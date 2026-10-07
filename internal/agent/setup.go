@@ -2,6 +2,7 @@ package agent
 
 import (
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -18,6 +19,9 @@ import (
 	"github.com/decentralabs/lab-station-linux/internal/config"
 	"github.com/decentralabs/lab-station-linux/internal/host"
 )
+
+//go:embed fmu_executor_version.txt
+var pinnedFMUExecutorVersion string
 
 var publicKeyPattern = regexp.MustCompile(`^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\r\n]{1,128})?$`)
 var wakeInterfacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
@@ -82,8 +86,8 @@ func Setup(args []string) error {
 		if info, err := os.Lstat(*fmuSource); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("FMU Executor source must be a readable, non-symlink directory")
 		}
-		if !fileExists(filepath.Join(*fmuSource, "app", "main.py")) || !fileExists(filepath.Join(*fmuSource, "requirements.txt")) || !fileExists(filepath.Join(*fmuSource, "VERSION")) {
-			return errors.New("FMU Executor source must contain app/main.py, requirements.txt, and VERSION")
+		if err := validateFMUExecutorSource(*fmuSource); err != nil {
+			return err
 		}
 	}
 	if !*noInstall {
@@ -240,6 +244,9 @@ func installDependencies(profile string, withFMU bool) error {
 }
 
 func installFmuExecutor(source string) error {
+	if err := validateFMUExecutorSource(source); err != nil {
+		return err
+	}
 	root := "/opt/decentralabs/fmu-executor"
 	if err := copyExecutorTree(filepath.Join(source, "app"), filepath.Join(root, "app")); err != nil {
 		return err
@@ -254,9 +261,6 @@ func installFmuExecutor(source string) error {
 	version, err := os.ReadFile(filepath.Join(source, "VERSION"))
 	if err != nil {
 		return err
-	}
-	if strings.TrimSpace(string(version)) == "" {
-		return errors.New("shared FMU Executor version is empty")
 	}
 	if err := atomicWrite(filepath.Join(root, "VERSION"), version, 0644); err != nil {
 		return err
@@ -298,6 +302,38 @@ func installFmuExecutor(source string) error {
 	}
 	if err := os.Chmod(state, sharedDirectoryMode); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateFMUExecutorSource(source string) error {
+	info, err := os.Lstat(source)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("FMU Executor source must be a readable, non-symlink directory")
+	}
+	appDirectory := filepath.Join(source, "app")
+	appInfo, appErr := os.Lstat(appDirectory)
+	if appErr != nil || !appInfo.IsDir() || appInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("FMU Executor source app directory must be a regular, non-symlink directory")
+	}
+	for _, relative := range []string{"app/main.py", "requirements.txt", "VERSION"} {
+		path := filepath.Join(source, relative)
+		fileInfo, statErr := os.Lstat(path)
+		if statErr != nil || !fileInfo.Mode().IsRegular() || fileInfo.Mode()&os.ModeSymlink != 0 {
+			return errors.New("FMU Executor source must contain regular, non-symlink app/main.py, requirements.txt, and VERSION files")
+		}
+	}
+	version, err := os.ReadFile(filepath.Join(source, "VERSION"))
+	if err != nil {
+		return fmt.Errorf("FMU Executor version could not be read: %w", err)
+	}
+	want := strings.TrimSpace(pinnedFMUExecutorVersion)
+	got := strings.TrimSpace(string(version))
+	if got == "" {
+		return errors.New("shared FMU Executor version is empty")
+	}
+	if want == "" || got != want {
+		return fmt.Errorf("shared FMU Executor version %q does not match the pinned station version %q", got, want)
 	}
 	return nil
 }

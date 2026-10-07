@@ -146,7 +146,7 @@ func TestSetupEndToEnd(t *testing.T) {
 	for path, content := range map[string]string{
 		"/tmp/labstation-test-fmu-source/app/main.py":      "print('fmu')\n",
 		"/tmp/labstation-test-fmu-source/requirements.txt": "example-dependency==1.0\n",
-		"/tmp/labstation-test-fmu-source/VERSION":          "test-version\n",
+		"/tmp/labstation-test-fmu-source/VERSION":          strings.TrimSpace(pinnedFMUExecutorVersion) + "\n",
 	} {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -202,7 +202,7 @@ func TestSetupEndToEnd(t *testing.T) {
 	if data, err := os.ReadFile("/opt/decentralabs/fmu-executor/app/main.py"); err != nil || string(data) != "print('fmu')\n" {
 		t.Errorf("FMU source was not copied into the managed installation: %q, %v", data, err)
 	}
-	if version, err := os.ReadFile("/opt/decentralabs/fmu-executor/VERSION"); err != nil || string(version) != "test-version\n" {
+	if version, err := os.ReadFile("/opt/decentralabs/fmu-executor/VERSION"); err != nil || strings.TrimSpace(string(version)) != strings.TrimSpace(pinnedFMUExecutorVersion) {
 		t.Errorf("FMU version was not installed: %q, %v", version, err)
 	}
 	if _, err := os.Stat("/etc/systemd/system/decentralabs-labstation-fmu.service"); err != nil {

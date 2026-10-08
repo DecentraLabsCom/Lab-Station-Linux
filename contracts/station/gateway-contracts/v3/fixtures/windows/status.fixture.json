@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "3.0.0",
+  "timestamp": "2026-10-07T08:00:00Z",
+  "host": "lab-windows-01",
+  "version": "3.5.8",
+  "platform": {
+    "os": "windows",
+    "arch": "x86_64",
+    "init": "windows-service",
+    "version": "Windows 11"
+  },
+  "profile": "hybrid",
+  "management": {
+    "transport": "winrm",
+    "port": 5986,
+    "ready": true,
+    "dispatcher": true
+  },
+  "remoteAccess": {
+    "mode": "remote-app",
+    "backend": "windows-remote-app",
+    "available": true,
+    "ready": true,
+    "issues": []
+  },
+  "summary": {
+    "state": "ready",
+    "ready": true,
+    "issues": []
+  },
+  "readiness": {
+    "physicalLab": { "available": true, "ready": true, "backend": "remote-app", "issues": [] },
+    "wake": { "available": true, "ready": true, "backend": "powercfg", "issues": [] },
+    "fmu": { "available": false, "ready": false, "backend": "station", "issues": [] }
+  },
+  "sessions": {
+    "active": [
+      { "id": "rdp-1", "user": "labuser", "kind": "remote", "active": true, "evictable": false }
+    ],
+    "localSessionActive": false,
+    "remoteSessionActive": true,
+    "labUserActive": true,
+    "queryOk": true
+  },
+  "operations": {
+    "lastPrepareSession": { "outcome": "success" }
+  },
+  "localModeEnabled": false,
+  "identity": { "agentVersion": "3.5.8", "contractVersion": "3.0.0", "labUserExists": true },
+  "remoteAppEnabled": true,
+  "winrm": { "ready": true },
+  "supportTier": "certified"
+}

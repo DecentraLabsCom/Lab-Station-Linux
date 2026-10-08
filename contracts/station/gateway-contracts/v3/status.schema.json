@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/DecentraLabsCom/Lab-Gateway/main/contracts/station/v3/status.schema.json",
+  "title": "DecentraLabs Station Contract v3 status",
+  "description": "Platform-neutral status contract emitted by Windows and Linux Lab Station implementations.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "timestamp",
+    "host",
+    "version",
+    "platform",
+    "profile",
+    "management",
+    "remoteAccess",
+    "summary",
+    "readiness",
+    "sessions",
+    "operations",
+    "localModeEnabled"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "3.0.0" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "host": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "platform": { "$ref": "#/$defs/platform" },
+    "profile": { "enum": ["dedicated", "hybrid", "fmu-only"] },
+    "management": { "$ref": "#/$defs/management" },
+    "remoteAccess": { "$ref": "#/$defs/remoteAccess" },
+    "summary": { "$ref": "#/$defs/summary" },
+    "readiness": { "$ref": "#/$defs/readiness" },
+    "sessions": { "$ref": "#/$defs/sessions" },
+    "operations": { "type": "object", "additionalProperties": true },
+    "localModeEnabled": { "type": "boolean" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "platform": { "properties": { "os": { "const": "linux" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "management": { "properties": { "transport": { "const": "ssh" } } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": { "properties": { "os": { "const": "windows" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "management": { "properties": { "transport": { "const": "winrm" } } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "platform": {
+      "type": "object",
+      "required": ["os"],
+      "properties": {
+        "os": { "enum": ["linux", "windows"] },
+        "arch": { "type": "string" },
+        "distro": { "type": "string" },
+        "distroVersion": { "type": "string" },
+        "kernel": { "type": "string" },
+        "init": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "management": {
+      "type": "object",
+      "required": ["transport", "ready"],
+      "properties": {
+        "transport": { "enum": ["ssh", "winrm"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "ready": { "type": "boolean" },
+        "dispatcher": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "remoteAccess": {
+      "type": "object",
+      "required": ["mode", "ready"],
+      "properties": {
+        "mode": { "type": "string", "minLength": 1 },
+        "backend": { "type": "string" },
+        "available": { "type": "boolean" },
+        "ready": { "type": "boolean" },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "capability": {
+      "type": "object",
+      "required": ["available", "ready", "issues"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "ready": { "type": "boolean" },
+        "backend": { "type": "string" },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "readiness": {
+      "type": "object",
+      "required": ["physicalLab", "wake", "fmu"],
+      "properties": {
+        "physicalLab": { "$ref": "#/$defs/capability" },
+        "wake": { "$ref": "#/$defs/capability" },
+        "fmu": { "$ref": "#/$defs/capability" },
+        "remoteAccess": { "$ref": "#/$defs/capability" }
+      },
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "object",
+      "required": ["state", "ready", "issues"],
+      "properties": {
+        "state": { "enum": ["ready", "degraded", "unavailable", "unknown"] },
+        "ready": { "type": "boolean" },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "session": {
+      "type": "object",
+      "required": ["kind", "active", "evictable"],
+      "properties": {
+        "kind": { "enum": ["local", "management", "remote", "service", "unknown"] },
+        "active": { "type": "boolean" },
+        "evictable": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "sessions": {
+      "type": "object",
+      "required": ["active", "localSessionActive"],
+      "properties": {
+        "active": { "type": "array", "items": { "$ref": "#/$defs/session" } },
+        "localSessionActive": { "type": "boolean" },
+        "remoteSessionActive": { "type": "boolean" },
+        "queryOk": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

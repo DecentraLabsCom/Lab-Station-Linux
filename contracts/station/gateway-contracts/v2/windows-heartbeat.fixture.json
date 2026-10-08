@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-10-07T08:00:00Z",
+  "schemaVersion": "2.0.0",
+  "host": "lab-windows-01",
+  "version": "3.5.8",
+  "remoteAppEnabled": true,
+  "legacyAppControlAutostart": false,
+  "wake": { "armedCount": 1, "nicPower": [] },
+  "readiness": {
+    "physicalLab": { "available": true, "ready": true, "issues": [] },
+    "wake": { "available": true, "ready": true, "issues": [] },
+    "fmu": { "available": false, "ready": false, "issues": [] }
+  },
+  "summary": { "state": "ready", "ready": true, "issues": [] },
+  "operations": {},
+  "status": {
+    "schemaVersion": "2.0.0",
+    "timestamp": "2026-10-07T08:00:00Z",
+    "host": "lab-windows-01",
+    "version": "3.5.8",
+    "stationProfile": "hybrid",
+    "remoteAppEnabled": true,
+    "winrm": { "ready": true },
+    "legacyAppControlAutostart": false,
+    "wake": { "armedCount": 1, "nicPower": [] },
+    "readiness": {
+      "physicalLab": { "available": true, "ready": true, "issues": [] },
+      "wake": { "available": true, "ready": true, "issues": [] },
+      "fmu": { "available": false, "ready": false, "issues": [] }
+    },
+    "summary": { "state": "ready", "ready": true, "issues": [] },
+    "operations": {},
+    "sessions": { "queryOk": true, "active": [], "localSessionActive": false, "remoteSessionActive": false },
+    "localSessionActive": false,
+    "localModeEnabled": false
+  }
+}

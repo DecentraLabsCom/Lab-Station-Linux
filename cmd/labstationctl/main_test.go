@@ -11,13 +11,14 @@ import (
 	"github.com/decentralabs/lab-station-linux/internal/config"
 )
 
-func TestLoadApplicationProfileRequiresRootOwnedNonWritableFileAndManagedStateDir(t *testing.T) {
+func TestLoadApplicationProfileValidatesProtectedFileAndManagedStateDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app-profile.json")
 	valid := `{"stateDir":"/var/lib/decentralabs/lab-station/data","application":{"id":"lab-app","command":"/opt/lab/apps/demo/run","args":["--safe"],"user":"labuser","closeTimeoutSeconds":15}}`
 	if err := os.WriteFile(path, []byte(valid), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	profile, err := loadApplicationProfile(path)
+	owner := uint32(os.Geteuid())
+	profile, err := loadApplicationProfileOwnedBy(path, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +29,7 @@ func TestLoadApplicationProfileRequiresRootOwnedNonWritableFileAndManagedStateDi
 	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadApplicationProfile(path); err == nil {
+	if _, err := loadApplicationProfileOwnedBy(path, owner); err == nil {
 		t.Fatal("world-writable application profile was accepted")
 	}
 	if err := os.Chmod(path, 0o644); err != nil {
@@ -37,8 +38,24 @@ func TestLoadApplicationProfileRequiresRootOwnedNonWritableFileAndManagedStateDi
 	if err := os.WriteFile(path, []byte(`{"stateDir":"/tmp/elsewhere","application":{}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadApplicationProfile(path); err == nil {
+	if _, err := loadApplicationProfileOwnedBy(path, owner); err == nil {
 		t.Fatal("application profile outside the managed station state was accepted")
+	}
+}
+
+func TestLoadApplicationProfileEnforcesRootOwnership(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app-profile.json")
+	valid := `{"stateDir":"/var/lib/decentralabs/lab-station/data","application":{"id":"lab-app","command":"/opt/lab/apps/demo/run","user":"labuser","closeTimeoutSeconds":15}}`
+	if err := os.WriteFile(path, []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(path, 65534, -1); err != nil {
+			t.Skipf("cannot create a non-root-owned profile fixture: %v", err)
+		}
+	}
+	if _, err := loadApplicationProfile(path); err == nil {
+		t.Fatal("profile not owned by root was accepted")
 	}
 }
 

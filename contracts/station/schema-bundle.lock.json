@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "repository": "DecentraLabsCom/Lab-Gateway",
+  "commit": "0cb8394b9409e711adae73530f1a6867224c86ad",
+  "files": [
+    {
+      "source": "contracts/station/README.md",
+      "target": "gateway-contracts/README.md",
+      "sha256": "ecde676d1d75796beb1193839c48e491c6753d7fe0ffb31ff4be98fbd8323511"
+    },
+    {
+      "source": "contracts/station/dispatcher/fixtures/failure-v2-response.fixture.json",
+      "target": "gateway-contracts/dispatcher/fixtures/failure-v2-response.fixture.json",
+      "sha256": "c08a7dd38d60ad3356039cff97ddf358dbb3fc3d996f16cce9f8a4fbd36ee4f5"
+    },
+    {
+      "source": "contracts/station/dispatcher/fixtures/operation-status-v2.fixture.json",
+      "target": "gateway-contracts/dispatcher/fixtures/operation-status-v2.fixture.json",
+      "sha256": "6a12051385eb4235ac332b0382f4c1602b62ee97b1b58a5eba1c1bba77ba6379"
+    },
+    {
+      "source": "contracts/station/dispatcher/fixtures/prepare-v2-response.fixture.json",
+      "target": "gateway-contracts/dispatcher/fixtures/prepare-v2-response.fixture.json",
+      "sha256": "6b58ce8fd48eaced1e129f46598283dc5a048eea25456b5956d90ad1e920fb61"
+    },
+    {
+      "source": "contracts/station/dispatcher/fixtures/prepare-v2.fixture.json",
+      "target": "gateway-contracts/dispatcher/fixtures/prepare-v2.fixture.json",
+      "sha256": "cc5872e8037713288badd6558219d3c4a0b5d82f8194852ffd1686e77b477787"
+    },
+    {
+      "source": "contracts/station/dispatcher/fixtures/warning-v2-response.fixture.json",
+      "target": "gateway-contracts/dispatcher/fixtures/warning-v2-response.fixture.json",
+      "sha256": "08162aca836ca9e6352ce3b2718bf279c28d76a396779f72ad5b45cbe4461c6e"
+    },
+    {
+      "source": "contracts/station/dispatcher/v1/request.schema.json",
+      "target": "gateway-contracts/dispatcher/v1/request.schema.json",
+      "sha256": "4400343a7b2b6dfe08e2987949cd79962e49f0cff3b06087daa14f8dbf3026d0"
+    },
+    {
+      "source": "contracts/station/dispatcher/v2/request.schema.json",
+      "target": "gateway-contracts/dispatcher/v2/request.schema.json",
+      "sha256": "ada8bff62d662d2c9e19cc1b36fa5315e775b7a5e7365e0a47ad0ebe74bbfc5c"
+    },
+    {
+      "source": "contracts/station/dispatcher/v2/response.schema.json",
+      "target": "gateway-contracts/dispatcher/v2/response.schema.json",
+      "sha256": "3d0a3d087cee29f3be863ec5633dfc12e54ee210a1f0878f3075ebe0e9ae9f47"
+    },
+    {
+      "source": "contracts/station/v2/windows-heartbeat.fixture.json",
+      "target": "gateway-contracts/v2/windows-heartbeat.fixture.json",
+      "sha256": "28646d766cfb5fa782ed40550fd2a6af40bd429babb3dd5d1e817c59d63e8139"
+    },
+    {
+      "source": "contracts/station/v2/windows-status.fixture.json",
+      "target": "gateway-contracts/v2/windows-status.fixture.json",
+      "sha256": "4225051ef76c1b994f7c3d7adaad2be189a4f8bcfa7bf23b165eba5d3adf70aa"
+    },
+    {
+      "source": "contracts/station/v3/capabilities.schema.json",
+      "target": "gateway-contracts/v3/capabilities.schema.json",
+      "sha256": "5649fd7b871d7a0a5388cc757624ee2f4ff250a712e95af9bf0fa1209491ddea"
+    },
+    {
+      "source": "contracts/station/v3/command-result.schema.json",
+      "target": "gateway-contracts/v3/command-result.schema.json",
+      "sha256": "420167e623fdb981332baed7476312794e3c17e6ebbaa6eaa5f9110822ebdb94"
+    },
+    {
+      "source": "contracts/station/v3/fixtures/invalid/future-major.fixture.json",
+      "target": "gateway-contracts/v3/fixtures/invalid/future-major.fixture.json",
+      "sha256": "893ebeff0857e9165731393dfa7aa3048517839e04f0e7f15a715e925d23b170"
+    },
+    {
+      "source": "contracts/station/v3/fixtures/linux/status.fixture.json",
+      "target": "gateway-contracts/v3/fixtures/linux/status.fixture.json",
+      "sha256": "246fe1bf77652c5ff61bc8d5eb44f2644b7bb73cbb38b601f12719340cdce9bb"
+    },
+    {
+      "source": "contracts/station/v3/fixtures/windows/status.fixture.json",
+      "target": "gateway-contracts/v3/fixtures/windows/status.fixture.json",
+      "sha256": "a4f969e647cba00ea4b12ac9aa79c37c12580c0317445c3428f7be003a6d5136"
+    },
+    {
+      "source": "contracts/station/v3/heartbeat.schema.json",
+      "target": "gateway-contracts/v3/heartbeat.schema.json",
+      "sha256": "4989d5d71b8e6fbc1b7a8e0be6a9b6474defbcad2d53c1aeb64edd3a2b7a521d"
+    },
+    {
+      "source": "contracts/station/v3/status.schema.json",
+      "target": "gateway-contracts/v3/status.schema.json",
+      "sha256": "d4e2bc335afa4d423ab8ff69570030da4f7432c4b418c2447f4972751244f4dd"
+    },
+    {
+      "source": "docs/station-test-parity.json",
+      "target": "v3/test-parity.json",
+      "sha256": "858f3ada07c5c7bce51903da5dac42b9ac274c0761eccceb175462494a8c52c6"
+    }
+  ]
+}

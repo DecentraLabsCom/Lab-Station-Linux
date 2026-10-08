@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/DecentraLabsCom/Lab-Gateway/main/contracts/station/dispatcher/v1/request.schema.json",
+  "title": "Lab Station dispatcher request v1",
+  "type": "object",
+  "required": ["schemaVersion", "id", "operation"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+    "operation": {"enum": ["execute", "artifact.read", "secret.set", "secret.clear"]},
+    "command": {"type": "string", "minLength": 1},
+    "args": {"type": "array", "items": {"type": "string", "maxLength": 256}, "maxItems": 16},
+    "artifact": {"enum": ["heartbeat", "status", "session-events"]},
+    "secretId": {"const": "fmu-internal-token"},
+    "secretValue": {"type": "string", "minLength": 32, "maxLength": 512}
+  },
+  "allOf": [
+    {"if": {"properties": {"operation": {"const": "execute"}}, "required": ["operation"]}, "then": {"required": ["command", "args"]}},
+    {"if": {"properties": {"operation": {"const": "artifact.read"}}, "required": ["operation"]}, "then": {"required": ["artifact"]}},
+    {"if": {"properties": {"operation": {"const": "secret.set"}}, "required": ["operation"]}, "then": {"required": ["secretId", "secretValue"]}},
+    {"if": {"properties": {"operation": {"const": "secret.clear"}}, "required": ["operation"]}, "then": {"required": ["secretId"]}}
+  ],
+  "additionalProperties": false
+}

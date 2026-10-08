@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/DecentraLabsCom/Lab-Gateway/main/contracts/station/dispatcher/v2/request.schema.json",
+  "title": "Lab Station dispatcher request v2",
+  "type": "object",
+  "required": ["schemaVersion", "id", "operation"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "id": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+    "operation": {"enum": ["execute", "operation.status", "artifact.read"]},
+    "command": {"type": "string", "minLength": 1},
+    "args": {"type": "array", "items": {"type": "string", "maxLength": 256}, "maxItems": 16},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "executeBefore": {"type": "string", "format": "date-time"},
+    "context": {
+      "type": "object",
+      "required": ["kind", "leaseId", "notBefore", "expiresAt"],
+      "properties": {
+        "kind": {"enum": ["reservation", "demo"]},
+        "labId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reservationKey": {"type": "string", "minLength": 1, "maxLength": 128},
+        "leaseId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "generation": {"type": "integer", "minimum": 0},
+        "notBefore": {"type": "string", "format": "date-time"},
+        "expiresAt": {"type": "string", "format": "date-time"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "reservation"}}, "required": ["kind"]}, "then": {"required": ["labId", "reservationKey"]}},
+        {"if": {"properties": {"kind": {"const": "demo"}}, "required": ["kind"]}, "then": {"properties": {"leaseId": {"pattern": "^demo:"}}}}
+      ],
+      "additionalProperties": false
+    },
+    "operationId": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+    "artifact": {"enum": ["heartbeat", "status", "session-events"]}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "operation": {"const": "execute"},
+        "command": {"enum": ["prepare-session", "release-session"]}
+      },
+      "required": ["command", "args", "issuedAt", "executeBefore", "context"],
+      "not": {"required": ["operationId"]}
+    },
+    {
+      "properties": {"operation": {"const": "execute"}},
+      "required": ["command", "args"],
+      "not": {
+        "anyOf": [
+          {"properties": {"command": {"enum": ["prepare-session", "release-session"]}}, "required": ["command"]},
+          {"required": ["issuedAt"]},
+          {"required": ["executeBefore"]},
+          {"required": ["context"]},
+          {"required": ["operationId"]}
+        ]
+      }
+    },
+    {"properties": {"operation": {"const": "operation.status"}}, "required": ["operationId"], "not": {"anyOf": [{"required": ["command"]}, {"required": ["args"]}, {"required": ["context"]}, {"required": ["issuedAt"]}, {"required": ["executeBefore"]}, {"required": ["artifact"]}]}},
+    {"properties": {"operation": {"const": "artifact.read"}}, "required": ["artifact"], "not": {"anyOf": [{"required": ["command"]}, {"required": ["args"]}, {"required": ["context"]}, {"required": ["issuedAt"]}, {"required": ["executeBefore"]}, {"required": ["operationId"]}]}}
+  ],
+  "additionalProperties": false
+}

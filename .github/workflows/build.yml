@@ -16,6 +16,21 @@ jobs:
         go-version: ["1.23.x", "stable"]
     steps:
       - uses: actions/checkout@v7
+      - name: Read pinned Gateway contract revision
+        id: gateway-contract
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          print("commit=" + json.loads(Path("contracts/station/schema-bundle.lock.json").read_text())["commit"])
+          PY
+      - uses: actions/checkout@v7
+        with:
+          repository: DecentraLabsCom/Lab-Gateway
+          ref: ${{ steps.gateway-contract.outputs.commit }}
+          path: .gateway-contract-source
+      - name: Verify pinned canonical station contract bundle
+        run: python3 .gateway-contract-source/scripts/verify_station_contract_bundle.py --station-root "$GITHUB_WORKSPACE" --canonical-root "$GITHUB_WORKSPACE/.gateway-contract-source"
       - name: Read pinned FMU Executor commit
         id: fmu-pin
         run: echo "commit=$(tr -d '\r\n' < internal/agent/fmu_executor_commit.txt)" >> "$GITHUB_OUTPUT"

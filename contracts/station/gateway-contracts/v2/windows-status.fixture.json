@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "2.0.0",
+  "timestamp": "2026-10-07T08:00:00Z",
+  "host": "lab-windows-01",
+  "version": "3.5.8",
+  "stationProfile": "hybrid",
+  "identity": { "labUserExists": true },
+  "remoteAppEnabled": true,
+  "winrm": { "ready": true },
+  "legacyAppControlAutostart": false,
+  "wake": { "armedCount": 1, "nicPower": [] },
+  "power": { "activePlan": "Balanced", "sleepCompliant": true, "hibernateCompliant": true },
+  "readiness": {
+    "physicalLab": { "available": true, "ready": true, "issues": [] },
+    "wake": { "available": true, "ready": true, "issues": [] },
+    "fmu": { "available": false, "ready": false, "issues": [] }
+  },
+  "summary": { "state": "ready", "ready": true, "issues": [] },
+  "operations": {},
+  "sessions": {
+    "queryOk": true,
+    "active": [],
+    "localSessionActive": false,
+    "remoteSessionActive": false
+  },
+  "localSessionActive": false,
+  "localModeEnabled": false
+}

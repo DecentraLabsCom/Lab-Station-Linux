@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "3.0.0",
+  "timestamp": "2026-10-07T08:00:00Z",
+  "host": "lab-linux-01",
+  "version": "0.1.0",
+  "platform": {
+    "os": "linux",
+    "distro": "Debian",
+    "distroVersion": "13",
+    "arch": "x86_64",
+    "init": "systemd",
+    "capabilities": ["ssh-dispatcher", "status-v3", "heartbeat", "local-mode", "power"]
+  },
+  "profile": "dedicated",
+  "management": {
+    "transport": "ssh",
+    "port": 22,
+    "ready": true,
+    "dispatcher": true
+  },
+  "remoteAccess": {
+    "mode": "tiny-desk",
+    "backend": "xrdp-xorg",
+    "available": true,
+    "ready": true,
+    "issues": []
+  },
+  "summary": {
+    "state": "ready",
+    "ready": true,
+    "issues": []
+  },
+  "readiness": {
+    "physicalLab": { "available": true, "ready": true, "backend": "tiny-desk", "issues": [] },
+    "wake": { "available": true, "ready": true, "backend": "ethtool", "issues": [] },
+    "fmu": { "available": true, "ready": true, "backend": "native", "issues": [] }
+  },
+  "sessions": {
+    "active": [
+      { "id": "xrdp-1", "user": "labuser", "kind": "remote", "active": true, "evictable": false }
+    ],
+    "localSessionActive": false,
+    "remoteSessionActive": true,
+    "labUserActive": true,
+    "queryOk": true
+  },
+  "operations": {
+    "lastPrepareSession": { "outcome": "success" }
+  },
+  "localModeEnabled": false,
+  "identity": { "hostname": "lab-linux-01", "agentVersion": "0.1.0", "contractVersion": "3.0.0" },
+  "fmuExecutor": { "mode": "native", "available": true, "ready": true, "port": 8091 },
+  "supportTier": "unverified"
+}

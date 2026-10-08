@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/DecentraLabsCom/Lab-Gateway/main/contracts/station/v3/heartbeat.schema.json",
+  "title": "DecentraLabs Station Contract v3 heartbeat",
+  "description": "Heartbeat envelope. Station implementations may include a nested status copy and implementation-specific fields.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "timestamp",
+    "host",
+    "version",
+    "platform",
+    "profile",
+    "management",
+    "remoteAccess",
+    "summary",
+    "readiness",
+    "sessions",
+    "operations",
+    "localModeEnabled"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "3.0.0" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "host": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "platform": { "type": "object", "required": ["os"], "properties": { "os": { "enum": ["linux", "windows"] } }, "additionalProperties": true },
+    "profile": { "enum": ["dedicated", "hybrid", "fmu-only"] },
+    "management": { "type": "object", "required": ["transport", "ready"], "properties": { "transport": { "enum": ["ssh", "winrm"] }, "ready": { "type": "boolean" } }, "additionalProperties": true },
+    "remoteAccess": { "type": "object", "required": ["mode", "ready"], "properties": { "mode": { "type": "string" }, "ready": { "type": "boolean" } }, "additionalProperties": true },
+    "summary": { "type": "object", "required": ["state", "ready", "issues"], "properties": { "state": { "enum": ["ready", "degraded", "unavailable", "unknown"] }, "ready": { "type": "boolean" }, "issues": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": true },
+    "readiness": {
+      "type": "object",
+      "required": ["physicalLab", "wake", "fmu"],
+      "properties": {
+        "physicalLab": { "$ref": "#/$defs/capability" },
+        "wake": { "$ref": "#/$defs/capability" },
+        "fmu": { "$ref": "#/$defs/capability" }
+      },
+      "additionalProperties": true
+    },
+    "sessions": { "type": "object", "required": ["active", "localSessionActive"], "properties": { "active": { "type": "array", "items": { "$ref": "#/$defs/session" } }, "localSessionActive": { "type": "boolean" } }, "additionalProperties": true },
+    "operations": { "type": "object", "additionalProperties": true },
+    "localModeEnabled": { "type": "boolean" },
+    "status": { "type": "object", "additionalProperties": true }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": ["available", "ready", "issues"],
+      "properties": { "available": { "type": "boolean" }, "ready": { "type": "boolean" }, "issues": { "type": "array", "items": { "type": "string" } } },
+      "additionalProperties": true
+    },
+    "session": {
+      "type": "object",
+      "required": ["kind", "active", "evictable"],
+      "properties": { "kind": { "enum": ["local", "management", "remote", "service", "unknown"] }, "active": { "type": "boolean" }, "evictable": { "type": "boolean" } },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "platform": { "properties": { "os": { "const": "linux" } } } } },
+      "then": { "properties": { "management": { "properties": { "transport": { "const": "ssh" } } } } }
+    },
+    {
+      "if": { "properties": { "platform": { "properties": { "os": { "const": "windows" } } } } },
+      "then": { "properties": { "management": { "properties": { "transport": { "const": "winrm" } } } } }
+    }
+  ]
+}

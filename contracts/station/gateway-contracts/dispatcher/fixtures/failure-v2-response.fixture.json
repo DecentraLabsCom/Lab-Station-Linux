@@ -1,0 +1,13 @@
+{
+  "id": "release-failure-1",
+  "command": "release-session",
+  "completedAt": "2026-10-08T11:00:05Z",
+  "success": false,
+  "exitCode": 2,
+  "outcome": "failure",
+  "message": "lease identity is no longer active",
+  "stdout": "",
+  "stderr": "lease identity is no longer active",
+  "durationMs": 4,
+  "metadata": {"code": "STATION_LEASE_STALE"}
+}

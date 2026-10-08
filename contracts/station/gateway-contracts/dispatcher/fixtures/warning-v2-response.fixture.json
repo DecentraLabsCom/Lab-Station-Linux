@@ -1,0 +1,13 @@
+{
+  "id": "release-warning-1",
+  "command": "release-session",
+  "completedAt": "2026-10-08T11:00:05Z",
+  "success": true,
+  "exitCode": 1,
+  "outcome": "warning",
+  "message": "session cleanup completed with warnings",
+  "stdout": "session cleanup completed with warnings",
+  "stderr": "one process remained",
+  "durationMs": 5000,
+  "metadata": {"code": "STATION_CLEANUP_WARNING"}
+}

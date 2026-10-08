@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/DecentraLabsCom/Lab-Gateway/main/contracts/station/v3/command-result.schema.json",
+  "type": "object",
+  "required": ["id", "command", "completedAt", "success", "exitCode", "outcome", "message", "transport"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "command": {"type": "string", "minLength": 1},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "success": {"type": "boolean"},
+    "exitCode": {"type": "integer", "minimum": 0},
+    "outcome": {"enum": ["success", "warning", "failure"]},
+    "message": {"type": "string"},
+    "stdout": {"type": "string"},
+    "stderr": {"type": "string"},
+    "durationMs": {"type": "integer", "minimum": 0},
+    "transport": {"enum": ["ssh", "winrm"]},
+    "exit_code": {"type": "integer", "minimum": 0},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "metadata": {"type": "object"},
+    "options": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"exitCode": {"const": 0}}},
+      "then": {"properties": {"success": {"const": true}, "outcome": {"const": "success"}}}
+    },
+    {
+      "if": {"properties": {"exitCode": {"const": 1}}},
+      "then": {"properties": {"success": {"const": true}, "outcome": {"const": "warning"}}}
+    },
+    {
+      "if": {"properties": {"exitCode": {"minimum": 2}}},
+      "then": {"properties": {"success": {"const": false}, "outcome": {"const": "failure"}}}
+    }
+  ],
+  "additionalProperties": false
+}

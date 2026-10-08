@@ -101,13 +101,17 @@ type applicationProfile struct {
 }
 
 func loadApplicationProfile(path string) (applicationProfile, error) {
+	return loadApplicationProfileOwnedBy(path, 0)
+}
+
+func loadApplicationProfileOwnedBy(path string, expectedUID uint32) (applicationProfile, error) {
 	var profile applicationProfile
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0022 != 0 {
 		return profile, errors.New("application profile is not a protected regular file")
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
-		return profile, errors.New("application profile must be owned by root")
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != expectedUID {
+		return profile, fmt.Errorf("application profile must be owned by uid %d", expectedUID)
 	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil || resolved != path {

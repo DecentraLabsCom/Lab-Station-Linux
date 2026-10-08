@@ -1,0 +1,21 @@
+{
+  "id": "62a57631-e05c-57ef-a4da-615301c145ca",
+  "command": "prepare-session",
+  "completedAt": "2026-10-08T10:00:10Z",
+  "success": true,
+  "exitCode": 0,
+  "outcome": "success",
+  "message": "session prepared",
+  "options": ["--guard-grace=60"],
+  "stdout": "session prepared",
+  "stderr": "",
+  "durationMs": 10000,
+  "metadata": {
+    "lease": {
+      "leaseId": "0xabc123",
+      "generation": 1,
+      "state": "active",
+      "expiresAt": "2026-10-08T11:00:00Z"
+    }
+  }
+}

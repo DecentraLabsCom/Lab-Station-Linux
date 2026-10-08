@@ -134,3 +134,5 @@ Read [contracts/README.md](contracts/README.md) and
 [packaging/README.md](packaging/README.md) for release details. See the parent
 workspace's `PLAN_LAB_STATION_LINUX.md` for the target matrix and hardware
 acceptance gates.
+The [operator runbook](docs/operator-runbook.md) covers canary setup, Gateway
+trust confirmation, routine checks, rollback, and evidence handling.

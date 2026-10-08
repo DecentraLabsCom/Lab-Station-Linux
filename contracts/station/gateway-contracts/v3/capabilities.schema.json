@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/DecentraLabsCom/Lab-Gateway/main/contracts/station/v3/capabilities.schema.json",
+  "type": "object",
+  "required": ["platform", "profile", "management", "readiness"],
+  "properties": {
+    "platform": {"$ref": "status.schema.json#/$defs/platform"},
+    "profile": {"enum": ["dedicated", "hybrid", "fmu-only"]},
+    "management": {"$ref": "status.schema.json#/$defs/management"},
+    "remoteAccess": {"$ref": "status.schema.json#/$defs/remoteAccess"},
+    "readiness": {"$ref": "status.schema.json#/$defs/readiness"}
+  },
+  "additionalProperties": true
+}

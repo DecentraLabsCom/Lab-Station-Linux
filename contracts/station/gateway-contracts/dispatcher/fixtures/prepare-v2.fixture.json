@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "id": "62a57631-e05c-57ef-a4da-615301c145ca",
+  "operation": "execute",
+  "command": "prepare-session",
+  "issuedAt": "2026-10-08T09:58:00Z",
+  "executeBefore": "2026-10-08T10:03:00Z",
+  "args": ["--guard-grace=60"],
+  "context": {
+    "kind": "reservation",
+    "labId": "42",
+    "reservationKey": "0xabc123",
+    "leaseId": "0xabc123",
+    "generation": 0,
+    "notBefore": "2026-10-08T10:00:00Z",
+    "expiresAt": "2026-10-08T11:00:00Z"
+  }
+}

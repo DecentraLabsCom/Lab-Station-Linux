@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,8 +14,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/decentralabs/lab-station-linux/internal/config"
 	"github.com/decentralabs/lab-station-linux/internal/host"
@@ -23,8 +26,19 @@ import (
 //go:embed fmu_executor_version.txt
 var pinnedFMUExecutorVersion string
 
+//go:embed fmu_executor_commit.txt
+var pinnedFMUExecutorCommit string
+
+//go:embed fmu_executor_sha256.txt
+var pinnedFMUExecutorSourceTreeSHA256 string
+
+//go:embed fmu_executor_payload_sha256.txt
+var pinnedFMUExecutorRuntimePayloadSHA256 string
+
 var publicKeyPattern = regexp.MustCompile(`^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\r\n]{1,128})?$`)
 var wakeInterfacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
+var fmuCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var fmuSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 const sharedDirectoryMode = os.FileMode(0o770) | os.ModeSetgid
 
@@ -98,6 +112,9 @@ func Setup(args []string) error {
 	if err := ensureGroup("labstation"); err != nil {
 		return err
 	}
+	if err := ensureGroup("labstation-fmu"); err != nil {
+		return err
+	}
 	if err := ensureUser("labstationd", "/usr/sbin/nologin", "/var/lib/decentralabs/lab-station", true, true); err != nil {
 		return err
 	}
@@ -111,20 +128,23 @@ func Setup(args []string) error {
 		return errors.New("unable to disable password login for the SSH management account")
 	}
 	if cfg.Profile != "fmu-only" {
-		if err := ensureUser("labuser", "/bin/sh", "/home/labuser", false, false); err != nil {
+		if err := ensureUser("labuser", "/bin/sh", tinyDeskSessionHome, false, false); err != nil {
 			return err
 		}
 	}
 	if err := ensureUser("labstation-fmu", "/usr/sbin/nologin", "/var/lib/decentralabs/fmu-executor", true, true); err != nil {
 		return err
 	}
-	if err := addToGroup("labstation-ops", "labstation"); err != nil {
-		return err
-	}
 	if err := addToGroup("labstationd", "labstation"); err != nil {
 		return err
 	}
-	if err := addToGroup("labstation-fmu", "labstation"); err != nil {
+	if err := removeFromGroup("labstation-ops", "labstation"); err != nil {
+		return err
+	}
+	if err := removeFromGroup("labstation-fmu", "labstation"); err != nil {
+		return err
+	}
+	if err := addToGroup("labstation-fmu", "labstation-fmu"); err != nil {
 		return err
 	}
 	if cfg.Profile != "fmu-only" {
@@ -164,6 +184,11 @@ func Setup(args []string) error {
 	cfg.ManagementPort = selectedPort
 	if err := writeConfig(*configPath, cfg); err != nil {
 		return err
+	}
+	if cfg.Profile != "fmu-only" {
+		if err := writeApplicationProfile(cfg); err != nil {
+			return err
+		}
 	}
 	if err := installHelperPolicy(); err != nil {
 		return err
@@ -265,6 +290,13 @@ func installFmuExecutor(source string) error {
 	if err := atomicWrite(filepath.Join(root, "VERSION"), version, 0644); err != nil {
 		return err
 	}
+	lock, err := os.ReadFile(filepath.Join(source, "SOURCE.lock.json"))
+	if err != nil {
+		return fmt.Errorf("FMU Executor source lock could not be read: %w", err)
+	}
+	if err := atomicWrite(filepath.Join(root, "SOURCE.lock.json"), lock, 0644); err != nil {
+		return err
+	}
 	for _, path := range []string{root, filepath.Join(root, "app")} {
 		if err := os.Chown(path, 0, 0); err != nil {
 			return err
@@ -291,25 +323,60 @@ func installFmuExecutor(source string) error {
 		return err
 	}
 	uid, _ := lookupUser("labstation-fmu")
-	if err := os.Chown("/var/lib/decentralabs/fmu-executor", uid, lookupGroup("labstation")); err != nil {
+	fmuGID := lookupGroup("labstation-fmu")
+	if err := os.Chown("/var/lib/decentralabs/fmu-executor", uid, fmuGID); err != nil {
 		return err
 	}
-	if err := os.Chown(state, uid, lookupGroup("labstation")); err != nil {
+	if err := os.Chown(state, uid, fmuGID); err != nil {
 		return err
 	}
-	if err := os.Chmod("/var/lib/decentralabs/fmu-executor", sharedDirectoryMode); err != nil {
+	if err := os.Chmod("/var/lib/decentralabs/fmu-executor", 0750); err != nil {
 		return err
 	}
-	if err := os.Chmod(state, sharedDirectoryMode); err != nil {
+	if err := os.Chmod(state, 0750); err != nil {
 		return err
 	}
 	return nil
 }
 
 func validateFMUExecutorSource(source string) error {
+	return validateFMUExecutorSourceWithPins(
+		source,
+		strings.TrimSpace(pinnedFMUExecutorVersion),
+		strings.TrimSpace(pinnedFMUExecutorCommit),
+		strings.TrimSpace(pinnedFMUExecutorSourceTreeSHA256),
+		strings.TrimSpace(pinnedFMUExecutorRuntimePayloadSHA256),
+	)
+}
+
+type fmuExecutorSourceLock struct {
+	Repository string `json:"repository"`
+	Version    string `json:"version"`
+	Commit     string `json:"commit"`
+	SourceTree struct {
+		Format string `json:"format"`
+		SHA256 string `json:"sha256"`
+	} `json:"sourceTree"`
+	RuntimePayload struct {
+		Format string `json:"format"`
+		SHA256 string `json:"sha256"`
+	} `json:"runtimePayload"`
+}
+
+func validateFMUExecutorSourceWithPins(source, versionPin, commitPin, sourceTreePin, runtimePayloadPin string) error {
 	info, err := os.Lstat(source)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("FMU Executor source must be a readable, non-symlink directory")
+	}
+	allowedEntries := map[string]bool{"app": true, "requirements.txt": true, "VERSION": true, "SOURCE.lock.json": true}
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return fmt.Errorf("FMU Executor source directory could not be read: %w", err)
+	}
+	for _, entry := range entries {
+		if !allowedEntries[entry.Name()] {
+			return fmt.Errorf("FMU Executor source contains unexpected top-level entry %q", entry.Name())
+		}
 	}
 	appDirectory := filepath.Join(source, "app")
 	appInfo, appErr := os.Lstat(appDirectory)
@@ -327,15 +394,85 @@ func validateFMUExecutorSource(source string) error {
 	if err != nil {
 		return fmt.Errorf("FMU Executor version could not be read: %w", err)
 	}
-	want := strings.TrimSpace(pinnedFMUExecutorVersion)
 	got := strings.TrimSpace(string(version))
 	if got == "" {
 		return errors.New("shared FMU Executor version is empty")
 	}
-	if want == "" || got != want {
-		return fmt.Errorf("shared FMU Executor version %q does not match the pinned station version %q", got, want)
+	if versionPin == "" || got != versionPin {
+		return fmt.Errorf("shared FMU Executor version %q does not match the pinned station version %q", got, versionPin)
+	}
+	if !fmuCommitPattern.MatchString(commitPin) || !fmuSHA256Pattern.MatchString(sourceTreePin) || !fmuSHA256Pattern.MatchString(runtimePayloadPin) {
+		return errors.New("station FMU Executor source pins are invalid")
+	}
+	lockPath := filepath.Join(source, "SOURCE.lock.json")
+	lockInfo, err := os.Lstat(lockPath)
+	if err != nil || !lockInfo.Mode().IsRegular() || lockInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("FMU Executor source must contain a regular, non-symlink SOURCE.lock.json")
+	}
+	lockBytes, err := os.ReadFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("FMU Executor source lock could not be read: %w", err)
+	}
+	var lock fmuExecutorSourceLock
+	if err := json.Unmarshal(lockBytes, &lock); err != nil {
+		return fmt.Errorf("FMU Executor source lock is invalid: %w", err)
+	}
+	if lock.Repository != "DecentraLabsCom/FMU-Executor" || lock.Version != versionPin || lock.Commit != commitPin ||
+		lock.SourceTree.Format != "git-ls-tree-manifest-v1" || lock.SourceTree.SHA256 != sourceTreePin ||
+		lock.RuntimePayload.Format != "sha256-path-manifest-v1" || lock.RuntimePayload.SHA256 != runtimePayloadPin {
+		return errors.New("FMU Executor source lock does not match the station's pinned release")
+	}
+	runtimePayloadDigest, err := fmuExecutorRuntimePayloadDigest(source)
+	if err != nil {
+		return err
+	}
+	if runtimePayloadPin == "" || runtimePayloadDigest != runtimePayloadPin {
+		return errors.New("FMU Executor runtime payload does not match the pinned source contents")
 	}
 	return nil
+}
+
+func fmuExecutorRuntimePayloadDigest(source string) (string, error) {
+	paths := []string{"VERSION", "requirements.txt"}
+	err := filepath.WalkDir(filepath.Join(source, "app"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("FMU Executor runtime payload must not contain symbolic links")
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("FMU Executor runtime payload may contain only regular files and directories")
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, filepath.ToSlash(relative))
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("FMU Executor runtime payload could not be enumerated: %w", err)
+	}
+	sort.Strings(paths)
+	lines := make([]string, 0, len(paths))
+	for _, relative := range paths {
+		contents, err := os.ReadFile(filepath.Join(source, filepath.FromSlash(relative)))
+		if err != nil {
+			return "", fmt.Errorf("FMU Executor runtime payload file %s could not be read: %w", relative, err)
+		}
+		fileDigest := sha256.Sum256(contents)
+		lines = append(lines, relative+"\t"+hex.EncodeToString(fileDigest[:]))
+	}
+	manifest := sha256.Sum256([]byte(strings.Join(lines, "\n") + "\n"))
+	return hex.EncodeToString(manifest[:]), nil
 }
 
 func copyExecutorTree(source, destination string) error {
@@ -396,6 +533,9 @@ func ensureUser(name, shell, home string, system, lockPassword bool) error {
 	created := exec.Command("id", "-u", name).Run() != nil
 	if created {
 		args := []string{"--create-home", "--home-dir", home, "--shell", shell}
+		if name == "labuser" {
+			args = []string{"--no-create-home", "--home-dir", home, "--shell", shell}
+		}
 		if system {
 			args = append([]string{"--system"}, args...)
 		}
@@ -418,6 +558,19 @@ func addToGroup(user, group string) error {
 	return exec.Command("usermod", "--append", "--groups", group, user).Run()
 }
 
+func removeFromGroup(user, group string) error {
+	output, err := exec.Command("id", "-nG", user).Output()
+	if err != nil {
+		return err
+	}
+	for _, current := range strings.Fields(string(output)) {
+		if current == group {
+			return exec.Command("gpasswd", "--delete", user, group).Run()
+		}
+	}
+	return nil
+}
+
 func writeConfig(path string, cfg config.Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return err
@@ -437,6 +590,25 @@ func writeConfig(path string, cfg config.Config) error {
 		return err
 	}
 	return os.Chown(path, 0, lookupGroup("labstation"))
+}
+
+func writeApplicationProfile(cfg config.Config) error {
+	if cfg.Profile == "fmu-only" {
+		return nil
+	}
+	profile := struct {
+		StateDir    string             `json:"stateDir"`
+		Application config.Application `json:"application"`
+	}{StateDir: cfg.StateDir, Application: cfg.Application}
+	data, err := json.Marshal(profile)
+	if err != nil {
+		return err
+	}
+	path := "/usr/share/decentralabs/lab-station/app-profile.json"
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return writeManagedConfig(path, string(append(data, '\n')), 0644)
 }
 
 func installDirectoryLayout(cfg config.Config) error {
@@ -497,6 +669,15 @@ func installDirectoryLayout(cfg config.Config) error {
 	if err := os.Chmod("/usr/lib/decentralabs/lab-station", 0755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll("/usr/share/decentralabs/lab-station", 0755); err != nil {
+		return err
+	}
+	if err := os.Chown("/usr/share/decentralabs/lab-station", 0, 0); err != nil {
+		return err
+	}
+	if err := os.Chmod("/usr/share/decentralabs/lab-station", 0755); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -524,7 +705,7 @@ func installDispatcherWrapper(configPath string) error {
 		return errors.New("station config path must be an absolute path without control characters")
 	}
 	quoted := strings.ReplaceAll(configPath, "'", "'\\''")
-	content := "#!/bin/sh\nexport LABSTATION_CONFIG='" + quoted + "'\nexec /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin\n"
+	content := "#!/bin/sh\nexport LABSTATION_CONFIG='" + quoted + "'\nexec /usr/bin/sudo -n --preserve-env=LABSTATION_CONFIG --user=labstationd -- /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin\n"
 	path := "/usr/lib/decentralabs/lab-station/labstation-dispatcher"
 	if err := atomicWrite(path, []byte(content), 0755); err != nil {
 		return err
@@ -662,19 +843,29 @@ func installHelperPolicy() error {
 		return err
 	}
 	path := "/etc/sudoers.d/decentralabs-lab-station"
-	content := "labstation-ops ALL=(root) NOPASSWD: /usr/lib/decentralabs/lab-station/labstation-helper\n"
+	content := helperSudoersPolicy()
 	if err := atomicWrite(path, []byte(content), 0440); err != nil {
 		return err
 	}
 	_ = os.Chown(path, 0, 0)
 	_ = os.Chmod(path, 0440)
-	if _, err := exec.LookPath("visudo"); err == nil {
-		if err := exec.Command("visudo", "-cf", path).Run(); err != nil {
-			_ = os.Remove(path)
-			return errors.New("sudoers policy failed visudo validation")
-		}
+	visudo, err := exec.LookPath("visudo")
+	if err != nil {
+		_ = os.Remove(path)
+		return errors.New("visudo is required to validate helper permissions")
+	}
+	if err := exec.Command(visudo, "-cf", path).Run(); err != nil {
+		_ = os.Remove(path)
+		return errors.New("sudoers policy failed visudo validation")
 	}
 	return nil
+}
+
+func helperSudoersPolicy() string {
+	return "Defaults:labstation-ops env_keep += \"LABSTATION_CONFIG\"\n" +
+		"labstation-ops ALL=(labstationd) NOPASSWD: /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin \"\"\n" +
+		"labstationd ALL=(root) NOPASSWD: /usr/lib/decentralabs/lab-station/labstation-helper \"\"\n" +
+		"labuser ALL=(root) NOPASSWD: /usr/lib/decentralabs/lab-station/labstation-helper \"\"\n"
 }
 
 const wakeInterfaceConfigPath = "/etc/decentralabs/lab-station/wake-interfaces"
@@ -826,30 +1017,116 @@ func installTinyDeskSession(cfg config.Config) error {
 	if err := configureTinyDeskRdp(); err != nil {
 		return err
 	}
-	openboxConfigPath := "/etc/decentralabs/lab-station/tiny-desk-rc.xml"
+	if err := configureTinyDeskSesman(); err != nil {
+		return err
+	}
+	openboxConfigPath := "/usr/share/decentralabs/lab-station/tiny-desk-rc.xml"
 	if err := writeManagedConfig(openboxConfigPath, tinyDeskOpenboxConfig, 0644); err != nil {
 		return err
 	}
-	home := "/home/labuser"
-	if err := os.MkdirAll(home, 0750); err != nil {
+	if err := ensureManagedDirectory("/var/lib/decentralabs/lab-station", 0, 0, 0755); err != nil {
 		return err
 	}
-	sessionPath := filepath.Join(home, ".xsession")
-	content := []byte("#!/bin/sh\n/usr/bin/openbox --config-file /etc/decentralabs/lab-station/tiny-desk-rc.xml &\nexec /usr/bin/labstationctl app launch\n")
-	if existing, err := os.ReadFile(sessionPath); err == nil {
-		if string(existing) != string(content) {
-			return errors.New("/home/labuser/.xsession already exists; review it before enabling Tiny Desk")
+	if err := ensureManagedDirectory(tinyDeskSessionHome, 0, 0, 0755); err != nil {
+		return err
+	}
+	if entries, err := os.ReadDir(tinyDeskSessionHome); err != nil {
+		return err
+	} else {
+		for _, entry := range entries {
+			if !oneOf(entry.Name(), ".xsession", ".xsession.sha256", ".xsession-errors") {
+				return fmt.Errorf("unexpected file in protected Tiny Desk home: %s", entry.Name())
+			}
+		}
+	}
+	userIDs, err := lookupUserIDs("labuser")
+	if err != nil {
+		return err
+	}
+	if err := exec.Command("usermod", "--home-dir", tinyDeskSessionHome, "labuser").Run(); err != nil {
+		return errors.New("unable to set the protected Tiny Desk session home")
+	}
+	workHome := tinyDeskWorkHome
+	for _, directory := range []string{workHome, filepath.Join(workHome, ".cache"), filepath.Join(workHome, ".config"), filepath.Join(workHome, ".local"), filepath.Join(workHome, ".local", "share")} {
+		if err := ensureManagedDirectory(directory, int(userIDs.uid), int(userIDs.gid), 0700); err != nil {
+			return err
+		}
+	}
+	content := []byte("#!/bin/sh\nexport HOME=/var/lib/decentralabs/lab-station/tiny-desk-home\nexport XDG_CACHE_HOME=\"$HOME/.cache\"\nexport XDG_CONFIG_HOME=\"$HOME/.config\"\nexport XDG_DATA_HOME=\"$HOME/.local/share\"\numask 077\n/usr/bin/openbox --config-file /usr/share/decentralabs/lab-station/tiny-desk-rc.xml &\nexec /usr/bin/labstationctl app launch\n")
+	sessionPath := filepath.Join(tinyDeskSessionHome, ".xsession")
+	if err := writeManagedConfig(sessionPath, string(content), 0755); err != nil {
+		return err
+	}
+	errorLog := filepath.Join(tinyDeskSessionHome, ".xsession-errors")
+	if existing, err := os.Lstat(errorLog); err == nil {
+		if existing.Mode()&os.ModeSymlink == 0 {
+			return errors.New("Tiny Desk session log path is not the managed workspace symlink")
+		}
+		current, err := os.Readlink(errorLog)
+		if err != nil || current != filepath.Join(workHome, ".xsession-errors") {
+			return errors.New("Tiny Desk session log path was changed outside Lab Station")
 		}
 	} else if !os.IsNotExist(err) {
 		return err
-	} else if err := atomicWrite(sessionPath, content, 0750); err != nil {
+	} else if err := os.Symlink(filepath.Join(workHome, ".xsession-errors"), errorLog); err != nil {
 		return err
 	}
-	uid, gid := lookupUser("labuser")
-	if err := os.Chown(sessionPath, uid, gid); err != nil {
+	if err := os.Lchown(errorLog, 0, 0); err != nil {
 		return err
 	}
 	return nil
+}
+
+const (
+	tinyDeskSessionHome = "/var/lib/decentralabs/lab-station/tiny-desk-session"
+	tinyDeskWorkHome    = "/var/lib/decentralabs/lab-station/tiny-desk-home"
+)
+
+type accountIDs struct{ uid, gid uint32 }
+
+func ensureManagedDirectory(path string, uid, gid int, mode os.FileMode) error {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return errors.New("managed directory must be an absolute path")
+	}
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(clean, current), current) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(current, 0755); err != nil && !os.IsExist(err) {
+				return err
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("managed path component %s is not a plain directory", current)
+		}
+	}
+	if err := os.Chown(clean, uid, gid); err != nil {
+		return err
+	}
+	return os.Chmod(clean, mode)
+}
+
+func lookupUserIDs(name string) (accountIDs, error) {
+	uidOutput, err := exec.Command("id", "-u", name).Output()
+	if err != nil {
+		return accountIDs{}, fmt.Errorf("unable to resolve %s uid: %w", name, err)
+	}
+	gidOutput, err := exec.Command("id", "-g", name).Output()
+	if err != nil {
+		return accountIDs{}, fmt.Errorf("unable to resolve %s gid: %w", name, err)
+	}
+	uid, uidErr := strconv.ParseUint(strings.TrimSpace(string(uidOutput)), 10, 32)
+	gid, gidErr := strconv.ParseUint(strings.TrimSpace(string(gidOutput)), 10, 32)
+	if uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
+		return accountIDs{}, fmt.Errorf("%s uid or gid is invalid", name)
+	}
+	return accountIDs{uid: uint32(uid), gid: uint32(gid)}, nil
 }
 
 // The dedicated rc.xml omits every key and mouse binding. Openbox's default
@@ -886,34 +1163,60 @@ func writeManagedConfig(path, content string, mode os.FileMode) error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	markerInfo, markerStatErr := os.Lstat(marker)
+	if markerStatErr == nil && (!markerInfo.Mode().IsRegular() || markerInfo.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("%s ownership marker must be a regular non-symlink file", marker)
+	} else if markerStatErr != nil && !os.IsNotExist(markerStatErr) {
+		return markerStatErr
+	}
+	if markerStatErr == nil {
+		if stat, ok := markerInfo.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 || markerInfo.Mode().Perm()&0077 != 0 {
+			return fmt.Errorf("%s ownership marker must be root-owned and private", marker)
+		}
+	}
 	previous, markerErr := os.ReadFile(marker)
 	if markerErr != nil && !os.IsNotExist(markerErr) {
 		return markerErr
 	}
-	if markerErr == nil && strings.TrimSpace(string(previous)) != digestText {
-		return fmt.Errorf("%s ownership marker does not match; review it before retrying setup", path)
+	existingInfo, existingStatErr := os.Lstat(path)
+	if existingStatErr == nil && (!existingInfo.Mode().IsRegular() || existingInfo.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("%s must be a regular non-symlink file", path)
+	} else if existingStatErr != nil && !os.IsNotExist(existingStatErr) {
+		return existingStatErr
 	}
-	if existing, err := os.ReadFile(path); err == nil {
-		if string(existing) != string(expected) {
+	existing, existingErr := os.ReadFile(path)
+	if existingErr != nil && !os.IsNotExist(existingErr) {
+		return existingErr
+	}
+	if markerErr == nil {
+		if existingErr != nil || strings.TrimSpace(string(previous)) == "" {
+			return fmt.Errorf("%s ownership marker has no matching managed file", path)
+		}
+		currentDigest := sha256.Sum256(existing)
+		if strings.TrimSpace(string(previous)) != hex.EncodeToString(currentDigest[:]) {
 			return fmt.Errorf("%s was changed outside Lab Station; review it before retrying setup", path)
 		}
-	} else if !os.IsNotExist(err) {
-		return err
-	} else {
+	} else if existingErr == nil && string(existing) != string(expected) {
+		return fmt.Errorf("%s already exists outside Lab Station; review it before retrying setup", path)
+	}
+	if existingErr != nil || string(existing) != string(expected) {
 		if err := atomicWrite(path, expected, mode); err != nil {
 			return err
 		}
-		if err := os.Chown(path, 0, 0); err != nil {
-			return err
-		}
-		if err := os.Chmod(path, mode); err != nil {
-			return err
-		}
 	}
-	if markerErr == nil {
-		return nil
+	if err := os.Chown(path, 0, 0); err != nil {
+		return err
 	}
-	return atomicWrite(marker, []byte(digestText+"\n"), 0600)
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	if err := atomicWrite(marker, []byte(digestText+"\n"), 0600); err != nil {
+		return err
+	}
+	if err := os.Chown(marker, 0, 0); err != nil {
+		return err
+	}
+	return os.Chmod(marker, 0600)
 }
 
 // xrdp is a host-wide listener. Tiny Desk disables channel redirection so the
@@ -1003,6 +1306,81 @@ func configureTinyDeskRdp() error {
 	return atomicWrite(marker, []byte(hex.EncodeToString(digest[:])+"\n"), 0600)
 }
 
+// xrdp-sesman keeps the Xauthority cookie under a system-owned runtime path.
+// That lets the session home remain root-owned so labuser cannot replace the
+// startup script or add Xsession startup hooks.
+func configureTinyDeskSesman() error {
+	path := "/etc/xrdp/sesman.ini"
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return errors.New("sesman.ini is unavailable; install xrdp before enabling Tiny Desk")
+	}
+	backup := path + ".decentralabs-lab-station.bak"
+	if _, err := os.Stat(backup); os.IsNotExist(err) {
+		if err := atomicWrite(backup, original, 0600); err != nil {
+			return err
+		}
+		if err := os.Chown(backup, 0, 0); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	marker := path + ".decentralabs-lab-station.sha256"
+	if previous, readErr := os.ReadFile(marker); readErr == nil {
+		digest := sha256.Sum256(original)
+		if strings.TrimSpace(string(previous)) != hex.EncodeToString(digest[:]) {
+			return errors.New("sesman.ini changed after Lab Station configured it; review the file and backup before retrying setup")
+		}
+	} else if !os.IsNotExist(readErr) {
+		return readErr
+	}
+	lines := strings.Split(string(original), "\n")
+	section := ""
+	foundGlobals := false
+	seenAuthority := false
+	output := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if strings.EqualFold(section, "Globals") && !seenAuthority {
+				output = append(output, "XAuthorityInSystemDir=yes")
+				seenAuthority = true
+			}
+			section = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			if strings.EqualFold(section, "Globals") {
+				foundGlobals = true
+			}
+			output = append(output, line)
+			continue
+		}
+		if strings.EqualFold(section, "Globals") && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, ";") {
+			key, _, ok := strings.Cut(trimmed, "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "XAuthorityInSystemDir") {
+				line = "XAuthorityInSystemDir=yes"
+				seenAuthority = true
+			}
+		}
+		output = append(output, line)
+	}
+	if strings.EqualFold(section, "Globals") && !seenAuthority {
+		output = append(output, "XAuthorityInSystemDir=yes")
+		seenAuthority = true
+	}
+	if !foundGlobals || !seenAuthority {
+		return errors.New("sesman.ini has no usable [Globals] section; refusing an unprotected Tiny Desk home")
+	}
+	updated := []byte(strings.Join(output, "\n"))
+	if err := atomicWrite(path, updated, 0644); err != nil {
+		return err
+	}
+	if err := os.Chown(path, 0, 0); err != nil {
+		return err
+	}
+	digest := sha256.Sum256(updated)
+	return atomicWrite(marker, []byte(hex.EncodeToString(digest[:])+"\n"), 0600)
+}
+
 func installSupervisor(cfg config.Config, configPath string, withFMU bool) error {
 	if sup := host.DetectSupervisor(); sup != nil && sup.Name() == "systemd" {
 		unit := `[Unit]
@@ -1038,7 +1416,7 @@ After=network.target
 [Service]
 Type=simple
 User=labstation-fmu
-Group=labstation
+Group=labstation-fmu
 EnvironmentFile=-/etc/decentralabs/lab-station/secrets/fmu-internal-token.env
 Environment=FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data
 WorkingDirectory=/opt/decentralabs/fmu-executor
@@ -1076,7 +1454,7 @@ WantedBy=multi-user.target
 			return err
 		}
 		if withFMU {
-			fmuScript := "#!/sbin/openrc-run\ncommand=/opt/decentralabs/fmu-executor/.venv/bin/python\ncommand_args=\"-m app\"\ncommand_user=labstation-fmu:labstation\ncommand_background=true\npidfile=/run/${RC_SVCNAME}.pid\noutput_log=/var/log/decentralabs/lab-station/fmu-executor.log\nerror_log=/var/log/decentralabs/lab-station/fmu-executor.log\nstart_pre() { [ -r /etc/decentralabs/lab-station/secrets/fmu-internal-token.env ] || return 1; . /etc/decentralabs/lab-station/secrets/fmu-internal-token.env; export FMU_INTERNAL_TOKEN_B64; export FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data; }\n"
+			fmuScript := "#!/sbin/openrc-run\ncommand=/opt/decentralabs/fmu-executor/.venv/bin/python\ncommand_args=\"-m app\"\ncommand_user=labstation-fmu:labstation-fmu\ncommand_background=true\npidfile=/run/${RC_SVCNAME}.pid\noutput_log=/var/log/decentralabs/lab-station/fmu-executor.log\nerror_log=/var/log/decentralabs/lab-station/fmu-executor.log\nstart_pre() { [ -r /etc/decentralabs/lab-station/secrets/fmu-internal-token.env ] || return 1; . /etc/decentralabs/lab-station/secrets/fmu-internal-token.env; export FMU_INTERNAL_TOKEN_B64; export FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data; }\n"
 			if err := os.WriteFile("/etc/init.d/decentralabs-labstation-fmu", []byte(fmuScript), 0755); err != nil {
 				return err
 			}

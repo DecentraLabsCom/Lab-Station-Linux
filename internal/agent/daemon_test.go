@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/decentralabs/lab-station-linux/internal/config"
 )
@@ -92,6 +93,142 @@ func TestQueueRejectsTruncatedJSONAndUnsafeIdsWithoutExecution(t *testing.T) {
 	}
 	if rejected.ExitCode != 2 || rejected.Metadata["code"] != "STATION_COMMAND_REJECTED" {
 		t.Fatalf("truncated request was not rejected: %#v", rejected)
+	}
+}
+
+func TestReconcileInterruptedWorkRequiresRecoveryAndNeverReplays(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	cfg.LogDir = filepath.Join(cfg.StateDir, "logs")
+	commands := filepath.Join(cfg.StateDir, "commands")
+	for _, directory := range []string{"inbox", "processing", "processed", "results"} {
+		if err := os.MkdirAll(filepath.Join(commands, directory), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lease := &leaseRecord{LeaseID: "lease-after-crash", Kind: "reservation", Generation: 4, State: "preparing", NotBefore: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)}
+	state := leaseState{NextGeneration: 4, Active: lease, Operations: map[string]leaseOperation{
+		"prepare-after-crash": {PayloadHash: "payload-hash", State: "processing", Command: "prepare-session", LeaseID: lease.LeaseID, Generation: lease.Generation},
+	}}
+	if err := saveLeaseState(cfg.StateDir, state); err != nil {
+		t.Fatal(err)
+	}
+	writeQueueRequest(t, filepath.Join(commands, "processing", "prepare-after-crash.json"), Request{SchemaVersion: 2, ID: "prepare-after-crash", Operation: "execute", Command: "prepare-session"})
+	writeQueueRequest(t, filepath.Join(commands, "processing", "plain-after-crash.json"), Request{SchemaVersion: 1, ID: "plain-after-crash", Operation: "execute", Command: "identity"})
+	a, calls := newTestAgent(t, "dedicated", &fakeRuntime{sessionsOK: true})
+	a.Config = cfg
+
+	if err := a.reconcileInterruptedWork(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Active == nil || recovered.Active.State != "recovery-required" {
+		t.Fatalf("crashed lease did not fail closed: %#v", recovered.Active)
+	}
+	operation := recovered.Operations["prepare-after-crash"]
+	if operation.State != "recovery-required" || operation.Result == nil || operation.Result.Metadata["code"] != "STATION_OPERATION_RECOVERY_REQUIRED" {
+		t.Fatalf("crashed operation was not durably classified: %#v", operation)
+	}
+	for _, id := range []string{"prepare-after-crash", "plain-after-crash"} {
+		var result Result
+		raw, err := os.ReadFile(filepath.Join(commands, "results", id+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.ExitCode != 2 || result.Metadata["code"] != "STATION_OPERATION_RECOVERY_REQUIRED" {
+			t.Fatalf("queue result %q did not fail closed: %#v", id, result)
+		}
+		if _, err := os.Stat(filepath.Join(commands, "processed", id+".json")); err != nil {
+			t.Fatalf("queue record %q was not preserved: %v", id, err)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("recovery replayed potentially completed operations: %#v", *calls)
+	}
+	if err := a.reconcileInterruptedWork(); err != nil {
+		t.Fatalf("reconciliation was not idempotent: %v", err)
+	}
+}
+
+func TestReconcileLeavesLiveLeaseOperationAlone(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	commands := filepath.Join(cfg.StateDir, "commands")
+	for _, directory := range []string{"inbox", "processing", "processed", "results"} {
+		if err := os.MkdirAll(filepath.Join(commands, directory), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lease := &leaseRecord{LeaseID: "lease-live", Kind: "reservation", Generation: 2, State: "preparing", NotBefore: time.Now().UTC().Format(time.RFC3339Nano), ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)}
+	if err := saveLeaseState(cfg.StateDir, leaseState{NextGeneration: 2, Active: lease, Operations: map[string]leaseOperation{
+		"prepare-live": {PayloadHash: "payload-hash", State: "processing", Command: "prepare-session", LeaseID: lease.LeaseID, Generation: lease.Generation},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	processingPath := filepath.Join(commands, "processing", "prepare-live.json")
+	writeQueueRequest(t, processingPath, Request{SchemaVersion: 2, ID: "prepare-live", Operation: "execute", Command: "prepare-session"})
+	active, err := lockLeaseOperation(cfg.StateDir, "prepare-live", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockState(active)
+	a := &Agent{Config: cfg}
+	if err := a.reconcileInterruptedWork(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active == nil || state.Active.State != "preparing" || state.Operations["prepare-live"].State != "processing" {
+		t.Fatalf("startup recovery modified a live operation: %#v", state)
+	}
+	if _, err := os.Stat(processingPath); err != nil {
+		t.Fatalf("startup recovery moved a live queue request: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(commands, "results", "prepare-live.json")); !os.IsNotExist(err) {
+		t.Fatalf("startup recovery created a result for a live operation: %v", err)
+	}
+}
+
+func TestLeaseOperationLockRejectsConcurrentAndSymlinkedLocks(t *testing.T) {
+	stateDir := t.TempDir()
+	first, err := lockLeaseOperation(stateDir, "operation-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockLeaseOperation(stateDir, "operation-1", true); err != errLeaseOperationInProgress {
+		t.Fatalf("concurrent lock error = %v, want in-progress sentinel", err)
+	}
+	unlockState(first)
+	second, err := lockLeaseOperation(stateDir, "operation-1", true)
+	if err != nil {
+		t.Fatalf("released operation lock could not be reacquired: %v", err)
+	}
+	unlockState(second)
+	if _, err := lockLeaseOperation(stateDir, "../outside", true); err == nil {
+		t.Fatal("operation lock accepted a path-traversal identifier")
+	}
+
+	linkDir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(linkDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(linkDir, "operation-linked.lock")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockLeaseOperation(linkDir, "linked", true); err == nil {
+		t.Fatal("operation lock followed a symbolic link")
 	}
 }
 

@@ -35,8 +35,9 @@ type EnergyStatus struct {
 
 type LinuxRuntime struct{}
 
-var sessionIDPattern = regexp.MustCompile(`^[0-9]+$`)
+var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
 var interfaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`)
+var loginctlCommand = "/usr/bin/loginctl"
 
 func NewRuntime() Runtime { return LinuxRuntime{} }
 
@@ -44,7 +45,7 @@ func (LinuxRuntime) Supervisor() Supervisor                 { return DetectSuper
 func (LinuxRuntime) NetworkInterfaces() []map[string]string { return NetworkInterfaces() }
 
 func (LinuxRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
-	out, err := exec.Command("loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
+	out, err := exec.Command(loginctlCommand, "list-sessions", "--no-legend", "--no-pager").Output()
 	if err != nil {
 		return nil, nil, false
 	}
@@ -58,7 +59,7 @@ func (LinuxRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
 			continue
 		}
 		id := fields[0]
-		props, err := exec.Command("loginctl", "show-session", id, "-p", "Name", "-p", "Remote", "-p", "Seat", "-p", "Type").Output()
+		props, err := exec.Command(loginctlCommand, "show-session", id, "-p", "Name", "-p", "Remote", "-p", "Seat", "-p", "Type").Output()
 		if err != nil {
 			ok = false
 			continue

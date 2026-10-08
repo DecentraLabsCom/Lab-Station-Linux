@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -27,6 +28,7 @@ type Agent struct {
 	Runtime      host.Runtime
 	runHelper    func(context.Context, []byte) error
 	rebootMarker func() bool
+	secretProbe  func() bool
 	mu           sync.Mutex
 }
 
@@ -46,14 +48,18 @@ type Result struct {
 }
 
 type Request struct {
-	SchemaVersion int      `json:"schemaVersion"`
-	ID            string   `json:"id"`
-	Operation     string   `json:"operation"`
-	Command       string   `json:"command"`
-	Args          []string `json:"args"`
-	Artifact      string   `json:"artifact"`
-	SecretID      string   `json:"secretId"`
-	SecretValue   string   `json:"secretValue"`
+	SchemaVersion int           `json:"schemaVersion"`
+	ID            string        `json:"id"`
+	Operation     string        `json:"operation"`
+	Command       string        `json:"command"`
+	Args          []string      `json:"args"`
+	Artifact      string        `json:"artifact"`
+	SecretID      string        `json:"secretId"`
+	SecretValue   string        `json:"secretValue"`
+	IssuedAt      string        `json:"issuedAt,omitempty"`
+	ExecuteBefore string        `json:"executeBefore,omitempty"`
+	Context       *LeaseContext `json:"context,omitempty"`
+	OperationID   string        `json:"operationId,omitempty"`
 }
 
 func New(cfg config.Config) *Agent { return &Agent{Config: cfg, Runtime: host.NewRuntime()} }
@@ -69,7 +75,9 @@ func (a *Agent) Execute(ctx context.Context, id, command string, args []string) 
 	if id == "" {
 		id = newID()
 	}
-	code, stdout, stderr, metadata := a.execute(ctx, command, args)
+	operationCtx, cancel := context.WithTimeout(ctx, operationBudget(command, args))
+	defer cancel()
+	code, stdout, stderr, metadata := a.execute(operationCtx, command, args)
 	outcome := "success"
 	if code == 1 {
 		outcome = "warning"
@@ -89,6 +97,22 @@ func (a *Agent) Execute(ctx context.Context, id, command string, args []string) 
 	return result
 }
 
+func operationBudget(command string, args []string) time.Duration {
+	switch command {
+	case "prepare-session", "session guard":
+		return 150 * time.Second
+	case "release-session", "power":
+		return 90 * time.Second
+	case "service", "fmu-executor":
+		if len(args) == 1 && args[0] == "status" {
+			return 15 * time.Second
+		}
+		return 90 * time.Second
+	default:
+		return 15 * time.Second
+	}
+}
+
 func (a *Agent) execute(ctx context.Context, command string, args []string) (int, string, string, map[string]any) {
 	if err := ValidateCommand(command, args); err != nil {
 		return 2, "", err.Error(), map[string]any{"code": "STATION_COMMAND_REJECTED"}
@@ -96,7 +120,7 @@ func (a *Agent) execute(ctx context.Context, command string, args []string) (int
 	switch command {
 	case "identity":
 		status := a.Status()
-		identity := map[string]any{"host": status["host"], "version": status["version"], "contractVersion": "3.0.0", "platform": status["platform"], "management": status["management"]}
+		identity := map[string]any{"host": status["host"], "version": status["version"], "contractVersion": "3.0.0", "dispatcherVersions": []int{1, 2}, "capabilities": []string{"reservation-lease-v1", "operation-status-v1"}, "platform": status["platform"], "management": status["management"]}
 		encoded, _ := json.Marshal(identity)
 		return 0, string(encoded), "", map[string]any{"contractVersion": "3.0.0", "platform": "linux"}
 	case "status-json":
@@ -224,7 +248,7 @@ func (a *Agent) Status() map[string]any {
 	remoteReady := applicationConfigured && xrdpState == "active" && a.tinyDeskConfigurationReady()
 	physicalAvailable := a.Config.Profile != "fmu-only"
 	fmuState := serviceState(supervisor, "decentralabs-labstation-fmu.service")
-	fmuConfigured := fileExists("/etc/decentralabs/lab-station/secrets/fmu-internal-token.env")
+	fmuConfigured := a.fmuSecretConfigured()
 	fmuReady := fmuConfigured && fmuState == "active"
 	wakeSupported, wakeEnabled := platform.WakeStatus(interfaces)
 	wakePersistent := platform.WakePersistent(interfaces)
@@ -294,7 +318,7 @@ func (a *Agent) Status() map[string]any {
 	active = append(active, remoteSessions...)
 	status := map[string]any{
 		"schemaVersion": "3.0.0", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "host": a.Config.Name, "version": a.Config.Version,
-		"platform":     map[string]any{"os": "linux", "distro": distro, "distroVersion": distroVersion, "arch": architecture(), "kernel": platform.KernelRelease(), "init": initName, "capabilities": []string{"ssh-dispatcher", "status-v3", "heartbeat", "local-mode", "power"}},
+		"platform":     map[string]any{"os": "linux", "distro": distro, "distroVersion": distroVersion, "arch": architecture(), "kernel": platform.KernelRelease(), "init": initName, "capabilities": []string{"ssh-dispatcher", "dispatcher-v1", "dispatcher-v2", "reservation-lease-v1", "operation-status-v1", "status-v3", "heartbeat", "local-mode", "power"}},
 		"profile":      a.Config.Profile,
 		"management":   map[string]any{"transport": "ssh", "port": a.Config.ManagementPort, "ready": serviceState(supervisor, "ssh.service") == "active" || serviceState(supervisor, "sshd.service") == "active", "dispatcher": true},
 		"remoteAccess": map[string]any{"mode": remoteMode, "backend": "xrdp-xorg", "available": physicalAvailable, "ready": remoteReady, "issues": physicalIssues, "applicationId": a.Config.Application.ID, "user": a.Config.Application.User},
@@ -307,7 +331,7 @@ func (a *Agent) Status() map[string]any {
 		},
 		"sessions":   map[string]any{"active": active, "localSessionActive": len(localSessions) > 0, "remoteSessionActive": hasLabUserRemote(remoteSessions), "labUserActive": hasLabUserRemote(remoteSessions), "labUserRemoteActive": hasLabUserRemote(remoteSessions), "localActive": len(localSessions), "remoteActive": len(remoteSessions), "queryOk": sessionsOK},
 		"operations": a.latestOperation(), "localModeEnabled": a.localModeEnabled(),
-		"identity":         map[string]any{"hostname": a.Config.Name, "agentVersion": a.Config.Version, "contractVersion": "3.0.0"},
+		"identity":         map[string]any{"hostname": a.Config.Name, "agentVersion": a.Config.Version, "contractVersion": "3.0.0", "dispatcherVersions": []int{1, 2}, "capabilities": []string{"reservation-lease-v1", "operation-status-v1"}},
 		"localGraphics":    map[string]any{"present": platform.LocalGraphicsPresent(), "displayManager": "not_modified_by_lab_station"},
 		"application":      map[string]any{"id": a.Config.Application.ID, "configured": applicationConfigured, "available": applicationConfigured, "commandHash": a.applicationHash(), "configHash": a.configurationHash()},
 		"policy":           map[string]any{"setup": "managed", "privilegedHelper": fileExists("/usr/lib/decentralabs/lab-station/labstation-helper"), "allowLocalSessionEviction": a.Config.AllowLocalSessionEviction},
@@ -426,13 +450,9 @@ func (a *Agent) localMode(action string, args []string) (int, string, string, ma
 }
 
 func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string, map[string]any) {
-	lock, lockErr := a.lockState()
-	if lockErr != nil {
-		return 2, "", "station state lock unavailable", map[string]any{"code": "STATION_STATE_LOCK_FAILED"}
+	if err := ctx.Err(); err != nil {
+		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
 	}
-	defer unlockState(lock)
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	guardOptions, guardErr := parseSessionGuardOptions(args, a.Config.GuardGraceSeconds, false)
 	if guardErr != nil {
 		return 2, "", guardErr.Error(), map[string]any{"code": "STATION_COMMAND_REJECTED"}
@@ -469,12 +489,30 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 					return 2, "", "session guard was cancelled", map[string]any{"code": "STATION_GUARD_CANCELLED"}
 				}
 			}
+			if a.localModeEnabled() {
+				return 2, "", "local mode became active during the session guard", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE"}
+			}
+			currentLocal, _, currentOK := a.hostRuntime().Sessions()
+			if !currentOK || !sameSessionSnapshot(local, currentLocal) {
+				return 2, "", "local session inventory changed during the session guard", map[string]any{"code": "STATION_SESSION_CHANGED"}
+			}
 			for _, session := range local {
-				if err := a.helper(ctx, map[string]any{"operation": "terminate-session", "sessionId": session["id"]}); err != nil {
+				if a.localModeEnabled() {
+					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE"}
+				}
+				if err := a.helper(ctx, helperSessionRequest(session)); err != nil {
 					return 2, "", "unable to release instructor session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
 			}
 		}
+	} else {
+		currentLocal, _, currentOK := a.hostRuntime().Sessions()
+		if !currentOK || len(currentLocal) != 0 || a.localModeEnabled() {
+			return 2, "", "station state changed while preparing", map[string]any{"code": "STATION_SESSION_CHANGED"}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
 	}
 	_ = os.MkdirAll(a.Config.StateDir, 0750)
 	a.appendEvent(map[string]any{"kind": "prepare-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "sessionsReleased": len(local), "notificationDelivered": notificationDelivered})
@@ -488,11 +526,9 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 }
 
 func (a *Agent) release(ctx context.Context, args []string) (int, string, string, map[string]any) {
-	lock, lockErr := a.lockState()
-	if lockErr != nil {
-		return 2, "", "station state lock unavailable", map[string]any{"code": "STATION_STATE_LOCK_FAILED"}
+	if err := ctx.Err(); err != nil {
+		return 2, "", "session release was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
 	}
-	defer unlockState(lock)
 	reboot := false
 	rebootTimeout := 0
 	for _, arg := range args {
@@ -522,7 +558,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	terminated := 0
 	for _, session := range remote {
 		if session["user"] == "labuser" && session["type"] == "x11" {
-			if err := a.helper(ctx, map[string]any{"operation": "terminate-session", "sessionId": session["id"]}); err != nil {
+			if err := a.helper(ctx, helperSessionRequest(session)); err != nil {
 				return 2, "", "unable to close Tiny Desk session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 			}
 			terminated++
@@ -557,6 +593,43 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	}
 	a.appendEvent(map[string]any{"kind": "release-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "closedLabuserSessions": terminated, "rebootRequested": rebootRequested, "rebootTimeoutSeconds": rebootTimeout})
 	return 0, "station released", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": rebootRequested, "rebootTimeoutSeconds": rebootTimeout}
+}
+
+func helperSessionRequest(session map[string]any) map[string]any {
+	remote := "no"
+	switch value := session["remote"].(type) {
+	case bool:
+		if value {
+			remote = "yes"
+		}
+	case string:
+		remote = value
+	}
+	return map[string]any{
+		"operation":     "terminate-session",
+		"sessionId":     fmt.Sprint(session["id"]),
+		"sessionUser":   fmt.Sprint(session["user"]),
+		"sessionRemote": remote,
+		"sessionSeat":   fmt.Sprint(session["seat"]),
+		"sessionType":   fmt.Sprint(session["type"]),
+	}
+}
+
+func sameSessionSnapshot(before, after []map[string]any) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	index := make(map[string]map[string]any, len(after))
+	for _, session := range after {
+		index[fmt.Sprint(session["id"])] = session
+	}
+	for _, session := range before {
+		current, found := index[fmt.Sprint(session["id"])]
+		if !found || fmt.Sprint(current["user"]) != fmt.Sprint(session["user"]) || fmt.Sprint(current["remote"]) != fmt.Sprint(session["remote"]) || fmt.Sprint(current["seat"]) != fmt.Sprint(session["seat"]) || fmt.Sprint(current["type"]) != fmt.Sprint(session["type"]) {
+			return false
+		}
+	}
+	return true
 }
 
 type sessionGuardOptions struct {
@@ -911,13 +984,32 @@ func (a *Agent) helper(ctx context.Context, request map[string]any) error {
 	if a.runHelper != nil {
 		return a.runHelper(ctx, encoded)
 	}
-	cmd := exec.CommandContext(ctx, "sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
+	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
 	cmd.Stdin = strings.NewReader(string(encoded))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("helper rejected operation: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func (a *Agent) fmuSecretConfigured() bool {
+	if a.secretProbe != nil {
+		return a.secretProbe()
+	}
+	request := []byte(`{"operation":"secret-status"}` + "\n")
+	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, "/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
+	cmd.Stdin = strings.NewReader(string(request))
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var status struct {
+		Configured bool `json:"configured"`
+	}
+	return json.Unmarshal(output, &status) == nil && status.Configured
 }
 
 func (a *Agent) lockState() (*os.File, error) {
@@ -1044,14 +1136,63 @@ func serviceState(sup host.Supervisor, unit string) string {
 	return state
 }
 func (a *Agent) tinyDeskConfigurationReady() bool {
-	if !fileExists("/home/labuser/.xsession") || !executable("/usr/bin/openbox") || !executable("/usr/bin/labstationctl") {
+	sessionPath := filepath.Join(tinyDeskSessionHome, ".xsession")
+	if !fileExists(sessionPath) || !executable("/usr/bin/openbox") || !executable("/usr/bin/labstationctl") {
 		return false
 	}
-	data, err := os.ReadFile("/home/labuser/.xsession")
-	if err != nil || !strings.Contains(string(data), "openbox --config-file /etc/decentralabs/lab-station/tiny-desk-rc.xml") || !strings.Contains(string(data), "exec /usr/bin/labstationctl app launch") {
+	account, err := user.Lookup("labuser")
+	if err != nil || account.HomeDir != tinyDeskSessionHome {
 		return false
 	}
-	policy, err := os.ReadFile("/etc/decentralabs/lab-station/tiny-desk-rc.xml")
+	managedRoot := filepath.Dir(tinyDeskSessionHome)
+	rootInfo, err := os.Lstat(managedRoot)
+	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || rootInfo.Mode().Perm() != 0755 {
+		return false
+	}
+	if stat, ok := rootInfo.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
+		return false
+	}
+	homeInfo, err := os.Lstat(tinyDeskSessionHome)
+	if err != nil || !homeInfo.IsDir() || homeInfo.Mode()&os.ModeSymlink != 0 || homeInfo.Mode().Perm() != 0755 {
+		return false
+	}
+	if stat, ok := homeInfo.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
+		return false
+	}
+	sessionInfo, err := os.Lstat(sessionPath)
+	if err != nil || !sessionInfo.Mode().IsRegular() || sessionInfo.Mode()&os.ModeSymlink != 0 || sessionInfo.Mode().Perm()&0022 != 0 {
+		return false
+	}
+	if stat, ok := sessionInfo.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
+		return false
+	}
+	data, err := os.ReadFile(sessionPath)
+	if err != nil || !strings.Contains(string(data), "export HOME="+tinyDeskWorkHome) || !strings.Contains(string(data), "openbox --config-file /usr/share/decentralabs/lab-station/tiny-desk-rc.xml") || !strings.Contains(string(data), "exec /usr/bin/labstationctl app launch") {
+		return false
+	}
+	errorLog, err := os.Readlink(filepath.Join(tinyDeskSessionHome, ".xsession-errors"))
+	if err != nil || errorLog != filepath.Join(tinyDeskWorkHome, ".xsession-errors") {
+		return false
+	}
+	workInfo, err := os.Lstat(tinyDeskWorkHome)
+	if err != nil || !workInfo.IsDir() || workInfo.Mode()&os.ModeSymlink != 0 || workInfo.Mode().Perm() != 0700 {
+		return false
+	}
+	userUID, err := strconv.ParseUint(account.Uid, 10, 32)
+	if err != nil {
+		return false
+	}
+	if stat, ok := workInfo.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(userUID) {
+		return false
+	}
+	profileInfo, err := os.Lstat("/usr/share/decentralabs/lab-station/app-profile.json")
+	if err != nil || !profileInfo.Mode().IsRegular() || profileInfo.Mode()&os.ModeSymlink != 0 || profileInfo.Mode().Perm()&0022 != 0 {
+		return false
+	}
+	if stat, ok := profileInfo.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
+		return false
+	}
+	policy, err := os.ReadFile("/usr/share/decentralabs/lab-station/tiny-desk-rc.xml")
 	if err != nil || string(policy) != tinyDeskOpenboxConfig {
 		return false
 	}
@@ -1083,6 +1224,29 @@ func (a *Agent) tinyDeskConfigurationReady() bool {
 		}
 	}
 	if !channels || !multimon {
+		return false
+	}
+	sesman, err := os.ReadFile("/etc/xrdp/sesman.ini")
+	if err != nil {
+		return false
+	}
+	section = ""
+	authorityInSystemDir := false
+	for _, line := range strings.Split(string(sesman), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+			continue
+		}
+		if section != "globals" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "XAuthorityInSystemDir") {
+			authorityInSystemDir = strings.EqualFold(strings.TrimSpace(value), "yes")
+		}
+	}
+	if !authorityInSystemDir {
 		return false
 	}
 	return a.hostRuntime().UserPasswordConfigured("labuser")

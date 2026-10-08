@@ -25,7 +25,7 @@ service never sets that password. For managed hosts, install OS dependencies
 through the normal configuration tool and pass `--no-install-deps`.
 
 `fmu-only` skips Xorg, xrdp, and Openbox. The shared FMU Executor can be
-installed from its versioned source checkout with `--fmu-executor-source`;
+installed from its pinned source checkout with `--fmu-executor-source`;
 dependency installation uses the configured Python package index. Keep TCP
 8091 reachable only from the private Lab Gateway network, and enroll the
 internal token through Gateway's station secret operation.
@@ -74,13 +74,18 @@ For an optional shared FMU Executor checkout:
 
 ```sh
 sudo ./install.sh --profile fmu-only \
-  --management-public-key 'ssh-ed25519 AAAA...' \
-  --fmu-executor-source /path/to/FMU-Executor
+  --management-public-key 'ssh-ed25519 AAAA...'
 ```
 
-Replace the illustrative source path with the FMU Executor source at the pinned
-version in `internal/agent/fmu_executor_version.txt`; package builds reject a
-different version and record the included FMU Executor version in the manifest.
+Build the bundle with `FMU_EXECUTOR_SOURCE` set to a clean FMU Executor checkout
+at the pinned version and commit. The installer detects the bundled source and
+setup verifies its lock plus runtime file digest before installation. The
+station pins the source tree in `internal/agent/fmu_executor_sha256.txt` and the
+installed runtime content in `fmu_executor_payload_sha256.txt`.
+
+For direct setup outside the installer, pass `--fmu-executor-source` pointing
+to the packaged `fmu-executor-source` directory, which must include
+`SOURCE.lock.json`; a raw checkout without that generated lock is rejected.
 The source tree is copied into `/opt/decentralabs/fmu-executor`; FMUs are stored
 under `/var/lib/decentralabs/fmu-executor/fmu-data`. Setup creates a Python
 virtual environment and installs the pinned project requirements. Use an

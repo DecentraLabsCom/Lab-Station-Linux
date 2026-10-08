@@ -11,6 +11,14 @@ Both station test suites consume the portable scenario matrix at
 run matching status, session, power, and recovery scenarios while retaining
 platform-specific adapters.
 
+The SSH command envelope is versioned separately from Station Contract:
+Lab Gateway owns the dispatcher v1/v2 schemas at
+`contracts/station/dispatcher/`. V2 is required for `prepare-session` and
+`release-session`; the request carries a durable lease identity and bounded
+UTC execution window. `operation.status` reports `not-found`, `processing`,
+`completed`, or `recovery-required`. An interrupted operation is never replayed
+automatically; its lease remains closed until an operator reconciles it.
+
 The Linux status and heartbeat payloads are emitted by `labstationd` and
 `labstationctl heartbeat`. Release CI should validate those payloads against
 the Gateway schema checkout and exercise the shared Windows/Linux fixtures.

@@ -20,17 +20,24 @@ func addCommandDirectoryToPath(t *testing.T, directory string) {
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func setLoginctlCommand(t *testing.T, directory string) {
+	t.Helper()
+	previous := loginctlCommand
+	loginctlCommand = filepath.Join(directory, "loginctl")
+	t.Cleanup(func() { loginctlCommand = previous })
+}
+
 func TestSessionInventoryClassifiesLocalRemoteManagementAndServiceSessions(t *testing.T) {
 	bin := t.TempDir()
 	installCommand(t, bin, "loginctl", `
 if [ "$1" = "list-sessions" ]; then
-  printf '1 1000 teacher seat0\n2 1001 labuser -\n3 1002 labstation-ops -\n4 1003 daemon -\nnot-a-session 1004 bad seat0\n'
+  printf '1 1000 teacher seat0\nxrdp-ses_a-9 1001 labuser -\n3 1002 labstation-ops -\n4 1003 daemon -\nbad;id 1004 bad seat0\n'
   exit 0
 fi
 if [ "$1" = "show-session" ]; then
   case "$2" in
     1) printf 'Name=teacher\nRemote=no\nSeat=seat0\nType=wayland\n' ;;
-    2) printf 'Name=labuser\nRemote=yes\nSeat=\nType=x11\n' ;;
+    xrdp-ses_a-9) printf 'Name=labuser\nRemote=yes\nSeat=\nType=x11\n' ;;
     3) printf 'Name=labstation-ops\nRemote=yes\nSeat=\nType=tty\n' ;;
     4) printf 'Name=daemon\nRemote=no\nSeat=\nType=unspecified\n' ;;
     *) exit 1 ;;
@@ -39,10 +46,11 @@ if [ "$1" = "show-session" ]; then
 fi
 exit 2`)
 	addCommandDirectoryToPath(t, bin)
+	setLoginctlCommand(t, bin)
 
 	local, remote, ok := (LinuxRuntime{}).Sessions()
 	if !ok {
-		t.Fatal("complete loginctl responses should be queryable")
+		t.Fatalf("complete loginctl responses should be queryable: local=%#v remote=%#v", local, remote)
 	}
 	if len(local) != 1 || local[0]["id"] != "1" || local[0]["kind"] != "local" || local[0]["evictable"] != true {
 		t.Fatalf("unexpected local session projection: %#v", local)
@@ -67,6 +75,7 @@ func TestSessionInventoryFailsClosedWhenLoginctlCannotRunOrDescribeSession(t *te
 if [ "$1" = "list-sessions" ]; then printf '1 1000 teacher seat0\n'; exit 0; fi
 exit 1`)
 	addCommandDirectoryToPath(t, bin)
+	setLoginctlCommand(t, bin)
 	local, remote, ok := (LinuxRuntime{}).Sessions()
 	if ok || len(local) != 0 || len(remote) != 0 {
 		t.Fatalf("a partial session inventory must not be reported as complete: local=%#v remote=%#v ok=%v", local, remote, ok)

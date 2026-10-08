@@ -11,11 +11,11 @@ import (
 )
 
 type Application struct {
-	ID                  string
-	Command             string
-	Args                []string
-	User                string
-	CloseTimeoutSeconds int
+	ID                  string   `json:"id"`
+	Command             string   `json:"command"`
+	Args                []string `json:"args"`
+	User                string   `json:"user"`
+	CloseTimeoutSeconds int      `json:"closeTimeoutSeconds"`
 }
 
 type Config struct {

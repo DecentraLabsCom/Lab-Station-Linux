@@ -30,7 +30,7 @@ func TestDispatchRejectsMalformedUnknownAndMultiObjectRequests(t *testing.T) {
 		{"malformed JSON", "{not-json", "STATION_COMMAND_REJECTED"},
 		{"unknown field", `{"schemaVersion":1,"operation":"execute","command":"status-json","args":[],"shell":"id"}`, "STATION_COMMAND_REJECTED"},
 		{"multiple objects", `{"schemaVersion":1,"operation":"execute","command":"identity","args":[]}{}`, "STATION_COMMAND_REJECTED"},
-		{"unsupported protocol", `{"schemaVersion":2,"operation":"execute","command":"identity","args":[]}`, "STATION_COMMAND_REJECTED"},
+		{"unsupported protocol", `{"schemaVersion":3,"id":"unsupported-1","operation":"execute","command":"identity","args":[]}`, "STATION_COMMAND_REJECTED"},
 		{"unknown operation", `{"schemaVersion":1,"operation":"shell","command":"id","args":[]}`, "STATION_COMMAND_REJECTED"},
 	}
 	for _, test := range cases {
@@ -128,7 +128,7 @@ func TestDispatchSecretHelperFailureReturnsGenericError(t *testing.T) {
 	a := New(config.Defaults())
 	const secret = "0123456789abcdef0123456789abcdef"
 	a.runHelper = func(context.Context, []byte) error { return errors.New(secret) }
-	request := `{"schemaVersion":1,"operation":"secret.set","secretId":"fmu-internal-token","secretValue":"` + secret + `"}`
+	request := `{"schemaVersion":1,"id":"secret-failure-1","operation":"secret.set","secretId":"fmu-internal-token","secretValue":"` + secret + `"}`
 	var output bytes.Buffer
 	if err := Dispatch(strings.NewReader(request), &output, a); err != nil {
 		t.Fatal(err)

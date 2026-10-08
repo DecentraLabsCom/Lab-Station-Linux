@@ -16,6 +16,14 @@ jobs:
         go-version: ["1.23.x", "stable"]
     steps:
       - uses: actions/checkout@v7
+      - name: Read pinned FMU Executor commit
+        id: fmu-pin
+        run: echo "commit=$(tr -d '\r\n' < internal/agent/fmu_executor_commit.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: DecentraLabsCom/FMU-Executor
+          ref: ${{ steps.fmu-pin.outputs.commit }}
+          path: .fmu-executor-source
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
@@ -25,13 +33,19 @@ jobs:
       - name: Run go vet
         run: go vet ./...
       - name: Run unit tests with race detection and coverage
+        env:
+          FMU_EXECUTOR_SOURCE: ${{ github.workspace }}/.fmu-executor-source
         run: go test -race -cover ./...
       - name: Smoke test amd64 and arm64 release bundles
+        env:
+          FMU_EXECUTOR_SOURCE: ${{ github.workspace }}/.fmu-executor-source
         run: sh packaging/test-build.sh
+      - name: Smoke test optional FMU-free bundles
+        run: env -u FMU_EXECUTOR_SOURCE sh packaging/test-build.sh
       - name: Smoke test installer in a disposable container
-        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh packaging/test-install.sh
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; sh packaging/test-install.sh'
       - name: Exercise privileged setup in a disposable container
-        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh packaging/test-setup.sh
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; apt-get update; apt-get install -y sudo; sh packaging/test-setup.sh'
 
   build:
     runs-on: ubuntu-latest
@@ -51,3 +65,38 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: go build ./...
+
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read pinned FMU Executor commit
+        id: fmu-pin
+        run: echo "commit=$(tr -d '\r\n' < internal/agent/fmu_executor_commit.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: DecentraLabsCom/FMU-Executor
+          ref: ${{ steps.fmu-pin.outputs.commit }}
+          path: .fmu-executor-source
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Debian and RPM packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential rpm
+          sudo gem install --no-document fpm --version 1.18.0
+      - name: Build .deb and .rpm packages for amd64 and arm64
+        env:
+          FMU_EXECUTOR_SOURCE: ${{ github.workspace }}/.fmu-executor-source
+        run: |
+          sh packaging/build.sh
+          sh packaging/build-packages.sh
+      - name: Verify package metadata and architecture
+        run: |
+          version=$(cat VERSION)
+          test "$(dpkg-deb -f "dist/lab-station-linux_${version}_amd64.deb" Architecture)" = amd64
+          test "$(dpkg-deb -f "dist/lab-station-linux_${version}_arm64.deb" Architecture)" = arm64
+          test "$(rpm -qp --queryformat '%{ARCH}' "dist/lab-station-linux-${version}.x86_64.rpm")" = x86_64
+          test "$(rpm -qp --queryformat '%{ARCH}' "dist/lab-station-linux-${version}.aarch64.rpm")" = aarch64

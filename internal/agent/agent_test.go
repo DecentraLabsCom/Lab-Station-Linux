@@ -139,6 +139,41 @@ func TestValidateCommandAllowlistAndInjectionBoundary(t *testing.T) {
 	}
 }
 
+func TestOperationBudgetsAreBoundedByCommandClass(t *testing.T) {
+	for _, test := range []struct {
+		command string
+		args    []string
+		want    time.Duration
+	}{
+		{"identity", nil, 15 * time.Second},
+		{"prepare-session", nil, 150 * time.Second},
+		{"session guard", nil, 150 * time.Second},
+		{"release-session", nil, 90 * time.Second},
+		{"fmu-executor", []string{"status"}, 15 * time.Second},
+		{"fmu-executor", []string{"restart"}, 90 * time.Second},
+		{"power", []string{"reboot"}, 90 * time.Second},
+	} {
+		if got := operationBudget(test.command, test.args); got != test.want {
+			t.Errorf("operationBudget(%q, %v) = %v, want %v", test.command, test.args, got, test.want)
+		}
+	}
+}
+
+func TestExecutePropagatesCancellationToPrivilegedHelper(t *testing.T) {
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}}
+	a, _ := newTestAgent(t, "fmu-only", runtime)
+	a.runHelper = func(ctx context.Context, _ []byte) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := a.Execute(ctx, "cancelled-fmu-action", "fmu-executor", []string{"restart"})
+	if result.ExitCode != 2 || result.Metadata["backend"] != "systemd" {
+		t.Fatalf("cancelled helper operation did not return a bounded failure: %#v", result)
+	}
+}
+
 func TestSessionGuardOptionsValidateValuesAndTargeting(t *testing.T) {
 	options, err := parseSessionGuardOptions([]string{"--guard-grace=5", "--guard-message=Save now", "--guard-notify=false", "--no-guard=false"}, 30, true)
 	if err != nil {

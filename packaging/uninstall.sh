@@ -68,19 +68,33 @@ fi
 systemctl reload ssh.service 2>/dev/null || systemctl reload sshd.service 2>/dev/null || rc-service sshd reload 2>/dev/null || true
 rm -f /etc/sudoers.d/decentralabs-lab-station
 rm -f /var/lib/labstation-ops/.ssh/authorized_keys
+XRDP_RESTART=0
 if [ -f /etc/xrdp/xrdp.ini.decentralabs-lab-station.bak ]; then
     MARKER=/etc/xrdp/xrdp.ini.decentralabs-lab-station.sha256
     if [ -f "$MARKER" ] && [ "$(sha256sum /etc/xrdp/xrdp.ini | awk '{print $1}')" = "$(cat "$MARKER")" ]; then
         cp -p /etc/xrdp/xrdp.ini.decentralabs-lab-station.bak /etc/xrdp/xrdp.ini
         rm -f /etc/xrdp/xrdp.ini.decentralabs-lab-station.bak "$MARKER"
-        systemctl restart xrdp.service 2>/dev/null || rc-service xrdp restart 2>/dev/null || true
+        XRDP_RESTART=1
     else
         echo 'xrdp.ini changed after setup; preserved the live file and its backup for manual reconciliation.' >&2
     fi
 fi
+if [ -f /etc/xrdp/sesman.ini.decentralabs-lab-station.bak ]; then
+    MARKER=/etc/xrdp/sesman.ini.decentralabs-lab-station.sha256
+    if [ -f "$MARKER" ] && [ "$(sha256sum /etc/xrdp/sesman.ini | awk '{print $1}')" = "$(cat "$MARKER")" ]; then
+        cp -p /etc/xrdp/sesman.ini.decentralabs-lab-station.bak /etc/xrdp/sesman.ini
+        rm -f /etc/xrdp/sesman.ini.decentralabs-lab-station.bak "$MARKER"
+        XRDP_RESTART=1
+    else
+        echo 'sesman.ini changed after setup; preserved the live file and its backup for manual reconciliation.' >&2
+    fi
+fi
+if [ "$XRDP_RESTART" = 1 ]; then
+    systemctl restart xrdp.service 2>/dev/null || rc-service xrdp restart 2>/dev/null || true
+fi
 rm -f /usr/bin/labstationctl /usr/bin/labstationd
 rm -f /usr/lib/decentralabs/lab-station/labstation-dispatcher /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin /usr/lib/decentralabs/lab-station/labstation-helper-bin
-TINY_DESK_CONFIG=/etc/decentralabs/lab-station/tiny-desk-rc.xml
+TINY_DESK_CONFIG=/usr/share/decentralabs/lab-station/tiny-desk-rc.xml
 TINY_DESK_MARKER=$TINY_DESK_CONFIG.sha256
 if [ -f "$TINY_DESK_CONFIG" ] && [ -f "$TINY_DESK_MARKER" ]; then
     if [ "$(sha256sum "$TINY_DESK_CONFIG" | awk '{print $1}')" = "$(cat "$TINY_DESK_MARKER")" ]; then
@@ -89,12 +103,17 @@ if [ -f "$TINY_DESK_CONFIG" ] && [ -f "$TINY_DESK_MARKER" ]; then
         echo 'Tiny Desk Openbox policy changed after setup; preserved it for manual reconciliation.' >&2
     fi
 fi
-if [ -f /home/labuser/.xsession ] && cmp -s /home/labuser/.xsession - <<'EOF'
-#!/bin/sh
-/usr/bin/openbox --config-file /etc/decentralabs/lab-station/tiny-desk-rc.xml &
-exec /usr/bin/labstationctl app launch
-EOF
-then rm -f /home/labuser/.xsession; fi
+SESSION_HOME=/var/lib/decentralabs/lab-station/tiny-desk-session
+managed_remove "$SESSION_HOME/.xsession"
+if [ "$(readlink "$SESSION_HOME/.xsession-errors" 2>/dev/null || true)" = /var/lib/decentralabs/lab-station/tiny-desk-home/.xsession-errors ]; then
+    rm -f "$SESSION_HOME/.xsession-errors"
+fi
+rmdir "$SESSION_HOME" 2>/dev/null || true
+if id labuser >/dev/null 2>&1; then
+    mkdir -p /home/labuser
+    usermod --home-dir /home/labuser labuser
+fi
+managed_remove /usr/share/decentralabs/lab-station/app-profile.json
 rm -rf /opt/decentralabs/fmu-executor /usr/share/decentralabs/lab-station/fmu-executor-source
 if [ "$PURGE" = 1 ]; then
     rm -rf /var/lib/decentralabs/lab-station /var/log/decentralabs/lab-station /etc/decentralabs/lab-station/secrets

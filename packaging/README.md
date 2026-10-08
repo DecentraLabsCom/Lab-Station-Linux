@@ -11,12 +11,16 @@ a release.
 The package manager installs dependencies; `labstationctl setup` applies the
 selected station profile after an operator supplies the Gateway public key.
 
-Set `FMU_EXECUTOR_SOURCE` to a checkout of the separately versioned shared
-FMU Executor to include its source tree in the payload. Its `VERSION` must
-match `internal/agent/fmu_executor_version.txt`; the portable release manifest
-records the included FMU version. This is a build-time input; a station never
-downloads executable source during setup. When omitted, FMU remains an optional
-capability and can be installed separately.
+Set `FMU_EXECUTOR_SOURCE` to a clean Git checkout of the separately versioned
+shared FMU Executor to include its source tree in the payload. The checkout must
+match the pinned version, commit, and normalized Git tree manifest SHA-256 in
+`internal/agent/fmu_executor_version.txt`, `fmu_executor_commit.txt`, and
+`fmu_executor_sha256.txt`, and the runtime payload digest in
+`fmu_executor_payload_sha256.txt`. The portable release manifest records both
+digests. Setup verifies the source lock and every runtime file before
+installation. This is a build-time input; a station never downloads executable
+source during setup. When omitted, FMU remains an optional capability and can
+be installed separately.
 Update the Linux pin and the Windows station's `fmu-executor/SOURCE.lock.json`
 together only after reviewing the shared FMU Executor release.
 

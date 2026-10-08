@@ -1,9 +1,9 @@
 # PLAN: Lab Station equivalente para Linux
 
-**Estado:** implementación funcional de Linux y de la integración básica con Gateway publicada; los CI Linux, Windows y Gateway están en verde. Aceptación global **parcial** y sin certificación de host/release. `supportTier` sigue en `unverified` hasta cerrar los gates de la sección 13.  
-**Ámbito:** Lab Station Linux nativa, interoperabilidad Windows/Linux en Lab Gateway y FMU Executor compartido.  
-**Fecha de revisión:** 2026-10-08.  
-**Documento de partida:** `PLAN_LAB_STATION_LINUX(5).md`, revisión del 2026-10-07.  
+**Estado:** implementación funcional de Linux y de la integración básica con Gateway publicada; los CI Linux, Windows y Gateway están en verde. Aceptación global **parcial** y sin certificación de host/release. `supportTier` sigue en `unverified` hasta cerrar los gates de la sección 13.\
+**Ámbito:** Lab Station Linux nativa, interoperabilidad Windows/Linux en Lab Gateway y FMU Executor compartido.\
+**Fecha de revisión:** 2026-10-08.\
+**Documento de partida:** `PLAN_LAB_STATION_LINUX(5).md`, revisión del 2026-10-07.\
 **Referencia de código:** las cuatro instantáneas inmutables de la sección 0; no se ha sustituido ninguna de las ramas solicitadas por `main`.
 
 ## 0. Base de la revisión y lectura del documento

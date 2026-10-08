@@ -14,7 +14,9 @@ fi
 cd "$ROOT"
 FAKE_BIN=$(mktemp -d)
 trap 'rm -rf "$FAKE_BIN"' EXIT HUP INT TERM
-mkdir -p /run/systemd/system /etc/ssh /etc/xrdp
+# The OpenRC adapter test runs on systemd-based images too, so create the
+# service-script directory that an OpenRC host provides.
+mkdir -p /run/systemd/system /etc/ssh /etc/xrdp /etc/init.d
 printf 'Include /etc/ssh/sshd_config.d/*.conf\n' > /etc/ssh/sshd_config
 printf '[Globals]\nallow_channels=true\nallow_multimon=true\n' > /etc/xrdp/xrdp.ini
 printf '[Globals]\nXAuthorityInSystemDir=no\n' > /etc/xrdp/sesman.ini
@@ -155,13 +157,17 @@ rm -f /tmp/labstation-test-openrc.log
 printf 'd\n' > /tmp/labstation-test-wol-mode
 
 export LABSTATION_SETUP_E2E=1
-COVERAGE_REPORT=$(go test -coverprofile=/tmp/labstation-setup.cover ./internal/agent && go tool cover -func=/tmp/labstation-setup.cover)
-printf '%s\n' "$COVERAGE_REPORT" | grep -E 'setup.go:.*|total:'
-AGENT_COVERAGE=$(printf '%s\n' "$COVERAGE_REPORT" | awk '$1 == "total:" { gsub("%", "", $3); print $3 }')
-COVERAGE_MINIMUM=${LABSTATION_COVERAGE_MINIMUM:-65.0}
-if ! awk -v coverage="$AGENT_COVERAGE" -v minimum="$COVERAGE_MINIMUM" 'BEGIN { exit !(coverage >= minimum) }'; then
-	 echo "Lab Station agent coverage is below the ${COVERAGE_MINIMUM}% installer test gate: ${AGENT_COVERAGE:-unavailable}%" >&2
-    exit 1
+if [ -n "${LABSTATION_SETUP_TEST_BINARY:-}" ]; then
+    "$LABSTATION_SETUP_TEST_BINARY" -test.run '^TestSetupEndToEnd$'
+else
+    COVERAGE_REPORT=$(go test -coverprofile=/tmp/labstation-setup.cover ./internal/agent && go tool cover -func=/tmp/labstation-setup.cover)
+    printf '%s\n' "$COVERAGE_REPORT" | grep -E 'setup.go:.*|total:'
+    AGENT_COVERAGE=$(printf '%s\n' "$COVERAGE_REPORT" | awk '$1 == "total:" { gsub("%", "", $3); print $3 }')
+    COVERAGE_MINIMUM=${LABSTATION_COVERAGE_MINIMUM:-65.0}
+    if ! awk -v coverage="$AGENT_COVERAGE" -v minimum="$COVERAGE_MINIMUM" 'BEGIN { exit !(coverage >= minimum) }'; then
+        echo "Lab Station agent coverage is below the ${COVERAGE_MINIMUM}% installer test gate: ${AGENT_COVERAGE:-unavailable}%" >&2
+        exit 1
+    fi
 fi
 
 CONFIG=/etc/decentralabs/lab-station/e2e.toml

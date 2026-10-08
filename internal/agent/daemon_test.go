@@ -265,3 +265,97 @@ func TestDaemonPublishesBothContractSnapshotsAndStopsOnContextCancellation(t *te
 		t.Fatal("daemon did not produce its file-backed audit log")
 	}
 }
+
+func TestDaemonPublishesHeartbeatWhileQueuedOperationIsBlocked(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Name = "daemon-long-operation-test"
+	cfg.StateDir = t.TempDir()
+	cfg.LogDir = filepath.Join(cfg.StateDir, "logs")
+	for _, directory := range []string{"inbox", "processing", "processed", "results"} {
+		if err := os.MkdirAll(filepath.Join(cfg.StateDir, "commands", directory), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	runtime := &fakeRuntime{
+		supervisor:    fakeSupervisor{name: "systemd"},
+		local:         []map[string]any{{"id": "seat-1", "user": "teacher", "kind": "local", "active": true, "evictable": false}},
+		sessionsOK:    true,
+		notifyStarted: started,
+		notifyRelease: release,
+	}
+	a := &Agent{Config: cfg, Runtime: runtime}
+	writeQueueRequest(t, filepath.Join(cfg.StateDir, "commands", "inbox", "long-operation.json"), Request{
+		SchemaVersion: 1,
+		ID:            "long-operation",
+		Operation:     "execute",
+		Command:       "session guard",
+		Args:          []string{"--guard-grace=0"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	queueDone := make(chan struct{})
+	unblock := func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}
+	go func() {
+		defer close(queueDone)
+		a.runQueue(ctx)
+	}()
+	defer func() {
+		unblock()
+		cancel()
+		select {
+		case <-queueDone:
+		case <-time.After(2 * time.Second):
+			t.Error("queue worker did not stop after cancellation")
+		}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued operation did not reach its blocking notification")
+	}
+	resultPath := filepath.Join(cfg.StateDir, "commands", "results", "long-operation.json")
+	if _, err := os.Stat(resultPath); !os.IsNotExist(err) {
+		t.Fatalf("blocked queued operation already has a result: %v", err)
+	}
+
+	published := make(chan error, 1)
+	go func() { published <- a.publish() }()
+	select {
+	case err := <-published:
+		if err != nil {
+			t.Fatalf("publish heartbeat while operation is blocked: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("heartbeat publication blocked behind a long queued operation")
+	}
+	for _, name := range []string{"status.json", "heartbeat.json"} {
+		if _, err := os.Stat(filepath.Join(cfg.StateDir, name)); err != nil {
+			t.Errorf("%s was not published while queue operation remained blocked: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(resultPath); !os.IsNotExist(err) {
+		t.Fatalf("queued operation completed before its blocking notification was released: %v", err)
+	}
+
+	unblock()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(resultPath); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read queued operation result: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("queued operation did not finish after notification was released")
+}

@@ -34,17 +34,19 @@ func (f fakeSupervisor) ServiceState(unit string) (string, error) {
 func (f fakeSupervisor) ServiceAction(string, string) error { return f.err }
 
 type fakeRuntime struct {
-	supervisor host.Supervisor
-	interfaces []map[string]string
-	local      []map[string]any
-	remote     []map[string]any
-	sessionsOK bool
-	wakeOK     bool
-	wakeOn     bool
-	wakeSaved  bool
-	hibernate  bool
-	notifyErr  error
-	notices    []string
+	supervisor    host.Supervisor
+	interfaces    []map[string]string
+	local         []map[string]any
+	remote        []map[string]any
+	sessionsOK    bool
+	wakeOK        bool
+	wakeOn        bool
+	wakeSaved     bool
+	hibernate     bool
+	notifyErr     error
+	notices       []string
+	notifyStarted chan struct{}
+	notifyRelease <-chan struct{}
 }
 
 func (f *fakeRuntime) Supervisor() host.Supervisor            { return f.supervisor }
@@ -62,6 +64,15 @@ func (f *fakeRuntime) LocalGraphicsPresent() bool         { return true }
 func (f *fakeRuntime) UserPasswordConfigured(string) bool { return true }
 func (f *fakeRuntime) NotifyLocalUsers(message string) error {
 	f.notices = append(f.notices, message)
+	if f.notifyStarted != nil {
+		select {
+		case f.notifyStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.notifyRelease != nil {
+		<-f.notifyRelease
+	}
 	return f.notifyErr
 }
 func (f *fakeRuntime) HibernateSupported() bool { return f.hibernate }

@@ -132,7 +132,5 @@ power, service control, and FMU token file operations.
 
 Read [contracts/README.md](contracts/README.md) and
 [packaging/README.md](packaging/README.md) for release details. The
-[implementation plan](docs/PLAN_LAB_STATION_LINUX.md) tracks the target matrix,
-acceptance gates, and remaining evidence.
 The [operator runbook](docs/operator-runbook.md) covers canary setup, Gateway
 trust confirmation, routine checks, rollback, and evidence handling.

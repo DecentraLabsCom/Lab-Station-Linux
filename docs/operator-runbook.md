@@ -112,5 +112,5 @@ Record the artifact version and hashes, OS image and architecture, supervisor,
 profile, setup result, Station identity and capabilities, SSH fingerprint
 confirmation, relevant service logs, and any recovery action. Keep credentials,
 private keys, FMU tokens, and model data out of the evidence bundle. A canary
-does not close the distro matrix, GUI, WoL, hardware, release-signing, or
-upgrade/rollback acceptance gates in `PLAN_LAB_STATION_LINUX.md`.
+does not by itself establish distro-matrix, GUI, WoL, hardware,
+release-signing, or upgrade/rollback readiness.

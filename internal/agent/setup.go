@@ -1082,9 +1082,13 @@ const (
 	tinyDeskWorkHome    = "/var/lib/decentralabs/lab-station/tiny-desk-home"
 )
 
-type accountIDs struct{ uid, gid int }
+type accountIDs struct{ uid, gid uint32 }
 
-func ensureManagedDirectory(path string, uid, gid int, mode os.FileMode) error {
+func ensureManagedDirectory(path string, uid, gid uint32, mode os.FileMode) error {
+	maxInt := uint64(^uint(0) >> 1)
+	if uint64(uid) > maxInt || uint64(gid) > maxInt {
+		return errors.New("managed directory owner is too large")
+	}
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) {
 		return errors.New("managed directory must be an absolute path")
@@ -1106,7 +1110,7 @@ func ensureManagedDirectory(path string, uid, gid int, mode os.FileMode) error {
 			return fmt.Errorf("managed path component %s is not a plain directory", current)
 		}
 	}
-	if err := os.Chown(clean, uid, gid); err != nil {
+	if err := os.Chown(clean, int(uid), int(gid)); err != nil {
 		return err
 	}
 	return os.Chmod(clean, mode)
@@ -1126,11 +1130,7 @@ func lookupUserIDs(name string) (accountIDs, error) {
 	if uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
 		return accountIDs{}, fmt.Errorf("%s uid or gid is invalid", name)
 	}
-	maxInt := uint64(^uint(0) >> 1)
-	if uid > maxInt || gid > maxInt {
-		return accountIDs{}, fmt.Errorf("%s uid or gid is too large", name)
-	}
-	return accountIDs{uid: int(uid), gid: int(gid)}, nil
+	return accountIDs{uid: uint32(uid), gid: uint32(gid)}, nil
 }
 
 // The dedicated rc.xml omits every key and mouse binding. Openbox's default

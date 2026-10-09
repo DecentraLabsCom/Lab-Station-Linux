@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0] - 2026-10-09
+
+### Added
+- Bundle FMU Executor 0.2.1 with reservation-scoped batch jobs, cancellation,
+  persistent result history, and bounded retention.
+
+### Changed
+- Pin the shared FMU Executor 0.2.1 source, commit, and runtime payload.
+
 ## [0.2.0] - 2026-10-09
 
 ### Fixed

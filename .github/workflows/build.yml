@@ -81,7 +81,7 @@ jobs:
             image: registry.opensuse.org/opensuse/leap:16.0
             package-manager: zypper
           - name: devuan-6-excalibur
-            image: devuan/devuan:excalibur
+            image: mirror.gcr.io/devuan/devuan:excalibur
             package-manager: apt
     steps:
       - uses: actions/checkout@v7

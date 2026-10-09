@@ -24,6 +24,7 @@ for arch in amd64 arm64; do
     test -s "$sums"
     (cd "$OUTPUT_DIR" && sha256sum -c "$(basename "$sums")")
     grep -F '"contractVersion":"3.0.0"' "$manifest" >/dev/null
+    grep -F '"runtimeDownloads":false' "$manifest" >/dev/null
     if [ -n "$VALID_FMU_SOURCE" ]; then
         pinned_fmu_version=$(tr -d '\r\n' < "$ROOT/internal/agent/fmu_executor_version.txt")
         pinned_fmu_commit=$(tr -d '\r\n' < "$ROOT/internal/agent/fmu_executor_commit.txt")

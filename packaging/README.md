@@ -24,6 +24,48 @@ be installed separately.
 Update the Linux pin and the Windows station's `fmu-executor/SOURCE.lock.json`
 together only after reviewing the shared FMU Executor release.
 
+## Preparing a GitHub release
+
+`release.sh` prepares signed portable archives, `.deb` and `.rpm` packages for
+amd64 and arm64, per-architecture manifests, and an aggregate `SHA256SUMS`
+file. It requires a matching `vX.Y.Z` tag, release notes in `CHANGELOG.md`,
+and a clean checkout of the pinned FMU Executor source. The script refuses to
+build unsigned release artifacts or reuse a non-empty output directory. Its
+checks verify package metadata, archive signatures, checksums, and the
+public/private signing-key pair.
+
+The GitHub release workflow publishes only tags already contained in `main`.
+It publishes a prerelease because the supported Linux distro, desktop, and
+hardware matrix has not yet been certified.
+
+Create a dedicated, unencrypted CI key pair on a trusted offline machine:
+
+```sh
+minisign -G -W -s minisign.key -p minisign.pub
+base64 -w0 minisign.key
+base64 -w0 minisign.pub
+```
+
+In the GitHub repository, create a `release` environment and add the first
+base64 value as the `MINISIGN_SECRET_KEY_BASE64` environment secret and the
+second as the `MINISIGN_PUBLIC_KEY_BASE64` environment variable. Restrict the
+environment to trusted maintainers and require review before deployment. Do
+not commit either key file. Keep the private key in an approved secret store,
+and distribute the public key fingerprint through a trusted channel separate
+from the GitHub release; a public key attached to a release does not establish
+its own authenticity.
+
+Verify a downloaded release using the public key whose fingerprint you have
+already trusted:
+
+```sh
+minisign -Vm SHA256SUMS -p minisign.pub
+sha256sum -c SHA256SUMS
+```
+
+The aggregate checksum list covers the archives, package files, manifests,
+per-archive checksum lists and signatures, and `minisign.pub`.
+
 The portable `install.sh` installer creates a `.previous` copy of replaced
 agent binaries. `rollback.sh` restores that copy. `uninstall.sh` stops the
 station services, restores the xrdp configuration backup when present, and

@@ -55,6 +55,8 @@ jobs:
         env:
           FMU_EXECUTOR_SOURCE: ${{ github.workspace }}/.fmu-executor-source
         run: sh packaging/test-build.sh
+      - name: Check release validation rejects incomplete configuration
+        run: sh packaging/test-release.sh
       - name: Smoke test optional FMU-free bundles
         run: env -u FMU_EXECUTOR_SOURCE sh packaging/test-build.sh
       - name: Smoke test installer in a disposable container

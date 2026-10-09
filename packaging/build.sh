@@ -126,7 +126,7 @@ for GOARCH_VALUE in amd64 arm64; do
     fi
     signed=false
     if [ -n "${MINISIGN_SECRET_KEY:-}" ]; then signed=true; fi
-    printf '{"version":"%s","os":"linux","arch":"%s","contractVersion":"3.0.0","fmuExecutorVersion":%s,"fmuExecutorCommit":%s,"fmuExecutorSha256":%s,"fmuExecutorRuntimeSha256":%s,"signed":%s}\n' \
+    printf '{"version":"%s","os":"linux","arch":"%s","contractVersion":"3.0.0","fmuExecutorVersion":%s,"fmuExecutorCommit":%s,"fmuExecutorSha256":%s,"fmuExecutorRuntimeSha256":%s,"runtimeDownloads":false,"signed":%s}\n' \
         "$VERSION" "$GOARCH_VALUE" "$FMU_EXECUTOR_VERSION_JSON" "$FMU_EXECUTOR_COMMIT_JSON" "$FMU_EXECUTOR_SHA256_JSON" "$FMU_EXECUTOR_RUNTIME_SHA256_JSON" "$signed" \
         > "$OUTPUT_DIR/lab-station-linux-$VERSION-linux-$GOARCH_VALUE.manifest.json"
 done

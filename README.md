@@ -45,7 +45,12 @@ Portable payloads and package roots are produced by `packaging/build.sh`.
 `packaging/build-packages.sh` derives `.deb` and `.rpm` files from those same
 roots and requires `fpm`. Release signing uses Minisign when
 `MINISIGN_SECRET_KEY` is supplied; a release pipeline must require signing and
-publish the corresponding public key separately.
+publish the corresponding public key separately. Tagged `vX.Y.Z` builds are
+published as GitHub prereleases after the release workflow verifies the tag,
+the pinned FMU Executor source, package metadata, checksums, and signatures.
+The Linux support matrix is still unverified, so these releases remain marked
+as prereleases until that matrix is certified. See
+[packaging/README.md](packaging/README.md) for key setup and verification.
 
 ## Install
 

@@ -1,0 +1,141 @@
+name: Linux agent release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish signed Linux assets
+    runs-on: ubuntu-24.04
+    environment: release
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      OUTPUT_DIR: ${{ github.workspace }}/dist/release
+      RELEASE_NOTES_PATH: ${{ github.workspace }}/dist/release-notes.md
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Validate release tag and source revision
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must use vX.Y.Z: $RELEASE_TAG" >&2
+            exit 2
+          fi
+          git fetch origin main:refs/remotes/origin/main
+          tag_commit=$(git rev-parse "$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$tag_commit" origin/main || {
+            echo "Release tag must point to a commit contained in origin/main" >&2
+            exit 2
+          }
+          version=${RELEASE_TAG#v}
+          test "$(tr -d '\r\n' < VERSION)" = "$version" || {
+            echo "Tag $RELEASE_TAG does not match VERSION $(cat VERSION)" >&2
+            exit 2
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Read pinned Gateway contract revision
+        id: gateway-contract
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          print("commit=" + json.loads(Path("contracts/station/schema-bundle.lock.json").read_text())["commit"])
+          PY
+
+      - name: Check out the canonical Gateway contract source
+        uses: actions/checkout@v7
+        with:
+          repository: DecentraLabsCom/Lab-Gateway
+          ref: ${{ steps.gateway-contract.outputs.commit }}
+          path: .gateway-contract-source
+
+      - name: Verify the pinned station contract bundle
+        run: python3 .gateway-contract-source/scripts/verify_station_contract_bundle.py --station-root "$GITHUB_WORKSPACE" --canonical-root "$GITHUB_WORKSPACE/.gateway-contract-source"
+
+      - name: Read pinned FMU Executor commit
+        id: fmu-pin
+        run: echo "commit=$(tr -d '\r\n' < internal/agent/fmu_executor_commit.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the pinned FMU Executor source
+        uses: actions/checkout@v7
+        with:
+          repository: DecentraLabsCom/FMU-Executor
+          ref: ${{ steps.fmu-pin.outputs.commit }}
+          path: .fmu-executor-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install package and signing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential rpm minisign
+          sudo gem install --no-document fpm --version 1.18.0
+
+      - name: Verify formatting, vet, tests, and FMU bundles
+        env:
+          FMU_EXECUTOR_SOURCE: ${{ github.workspace }}/.fmu-executor-source
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+          sh packaging/test-build.sh
+
+      - name: Prepare Minisign keys
+        env:
+          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
+          MINISIGN_PUBLIC_KEY_BASE64: ${{ vars.MINISIGN_PUBLIC_KEY_BASE64 }}
+        run: |
+          set -eu
+          test -n "$MINISIGN_SECRET_KEY_BASE64" || { echo 'Set release environment variable MINISIGN_SECRET_KEY_BASE64.' >&2; exit 2; }
+          test -n "$MINISIGN_PUBLIC_KEY_BASE64" || { echo 'Set release environment variable MINISIGN_PUBLIC_KEY_BASE64.' >&2; exit 2; }
+          private_key="$RUNNER_TEMP/minisign.key"
+          public_key="$RUNNER_TEMP/minisign.pub"
+          printf '%s' "$MINISIGN_SECRET_KEY_BASE64" | base64 --decode > "$private_key"
+          printf '%s' "$MINISIGN_PUBLIC_KEY_BASE64" | base64 --decode > "$public_key"
+          chmod 600 "$private_key"
+          test -s "$private_key" && test -s "$public_key"
+          echo "MINISIGN_SECRET_KEY=$private_key" >> "$GITHUB_ENV"
+          echo "MINISIGN_PUBLIC_KEY_FILE=$public_key" >> "$GITHUB_ENV"
+
+      - name: Build and verify release assets
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+          FMU_EXECUTOR_SOURCE: ${{ github.workspace }}/.fmu-executor-source
+        run: sh packaging/release.sh
+
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Lab Station Linux v${{ steps.release.outputs.version }}
+          body_path: ${{ env.RELEASE_NOTES_PATH }}
+          prerelease: true
+          make_latest: false
+          files: |
+            ${{ env.OUTPUT_DIR }}/lab-station-linux-*
+            ${{ env.OUTPUT_DIR }}/SHA256SUMS
+            ${{ env.OUTPUT_DIR }}/SHA256SUMS.minisig
+            ${{ env.OUTPUT_DIR }}/minisign.pub

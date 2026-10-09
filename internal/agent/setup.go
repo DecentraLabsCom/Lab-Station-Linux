@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"os/user"
@@ -1085,8 +1086,7 @@ const (
 type accountIDs struct{ uid, gid uint32 }
 
 func ensureManagedDirectory(path string, uid, gid uint32, mode os.FileMode) error {
-	maxInt := uint64(^uint(0) >> 1)
-	if uint64(uid) > maxInt || uint64(gid) > maxInt {
+	if uid > math.MaxInt32 || gid > math.MaxInt32 {
 		return errors.New("managed directory owner is too large")
 	}
 	clean := filepath.Clean(path)

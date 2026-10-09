@@ -1048,7 +1048,7 @@ func installTinyDeskSession(cfg config.Config) error {
 	}
 	workHome := tinyDeskWorkHome
 	for _, directory := range []string{workHome, filepath.Join(workHome, ".cache"), filepath.Join(workHome, ".config"), filepath.Join(workHome, ".local"), filepath.Join(workHome, ".local", "share")} {
-		if err := ensureManagedDirectory(directory, int(userIDs.uid), int(userIDs.gid), 0700); err != nil {
+		if err := ensureManagedDirectory(directory, userIDs.uid, userIDs.gid, 0700); err != nil {
 			return err
 		}
 	}
@@ -1082,7 +1082,7 @@ const (
 	tinyDeskWorkHome    = "/var/lib/decentralabs/lab-station/tiny-desk-home"
 )
 
-type accountIDs struct{ uid, gid uint32 }
+type accountIDs struct{ uid, gid int }
 
 func ensureManagedDirectory(path string, uid, gid int, mode os.FileMode) error {
 	clean := filepath.Clean(path)
@@ -1126,7 +1126,11 @@ func lookupUserIDs(name string) (accountIDs, error) {
 	if uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
 		return accountIDs{}, fmt.Errorf("%s uid or gid is invalid", name)
 	}
-	return accountIDs{uid: uint32(uid), gid: uint32(gid)}, nil
+	maxInt := uint64(^uint(0) >> 1)
+	if uid > maxInt || gid > maxInt {
+		return accountIDs{}, fmt.Errorf("%s uid or gid is too large", name)
+	}
+	return accountIDs{uid: int(uid), gid: int(gid)}, nil
 }
 
 // The dedicated rc.xml omits every key and mouse binding. Openbox's default

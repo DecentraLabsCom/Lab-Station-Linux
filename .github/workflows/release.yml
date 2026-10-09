@@ -160,6 +160,9 @@ jobs:
           make_latest: false
           files: |
             ${{ env.OUTPUT_DIR }}/lab-station-linux-*
+            ${{ env.OUTPUT_DIR }}/lab-station-linux_*
             ${{ env.OUTPUT_DIR }}/SHA256SUMS
             ${{ env.OUTPUT_DIR }}/SHA256SUMS.minisig
             ${{ env.OUTPUT_DIR }}/minisign.pub
+          fail_on_unmatched_files: true
+          overwrite_files: true

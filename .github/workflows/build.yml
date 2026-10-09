@@ -60,9 +60,9 @@ jobs:
       - name: Smoke test optional FMU-free bundles
         run: env -u FMU_EXECUTOR_SOURCE sh packaging/test-build.sh
       - name: Smoke test installer in a disposable container
-        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; sh packaging/test-install.sh'
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src public.ecr.aws/docker/library/golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; sh packaging/test-install.sh'
       - name: Exercise privileged setup in a disposable container
-        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; apt-get update; apt-get install -y sudo; sh packaging/test-setup.sh'
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src public.ecr.aws/docker/library/golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; apt-get update; apt-get install -y sudo; sh packaging/test-setup.sh'
 
   distro-setup-smoke:
     name: Setup smoke (${{ matrix.distro.name }})
@@ -72,13 +72,13 @@ jobs:
       matrix:
         distro:
           - name: ubuntu-24.04
-            image: ubuntu:24.04
+            image: public.ecr.aws/docker/library/ubuntu:24.04
             package-manager: apt
           - name: rocky-9
-            image: rockylinux/rockylinux:9
+            image: quay.io/rockylinux/rockylinux:9
             package-manager: dnf
           - name: opensuse-leap-16
-            image: opensuse/leap:16.0
+            image: registry.opensuse.org/opensuse/leap:16.0
             package-manager: zypper
           - name: devuan-6-excalibur
             image: devuan/devuan:excalibur

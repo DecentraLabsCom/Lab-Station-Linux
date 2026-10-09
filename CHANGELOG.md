@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0] - 2026-10-09
+
+### Fixed
+- Validate Linux account and owner IDs before integer conversion and `chown`, including bounds for signed system-call arguments.
+
+### Changed
+- Upload Debian `.deb` packages for amd64 and arm64 alongside the signed portable bundles and RPM packages.
+- Update the embedded shared FMU Executor source and runtime payload to version 0.1.1.
+
 ## [0.1.0] - 2026-10-09
 
 Initial preview release of the native Linux Lab Station agent.

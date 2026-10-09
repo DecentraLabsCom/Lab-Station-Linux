@@ -7,49 +7,72 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vX.Y.Z tag to release
-        required: true
+        description: Existing vX.Y.Z tag; leave empty to validate the current branch
+        required: false
         type: string
+      dry_run:
+        description: Build and verify signed artifacts without publishing a prerelease
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Build and publish signed Linux assets
+    name: Build, verify, and optionally publish signed Linux assets
     runs-on: ubuntu-24.04
-    environment: release
+    environment: MiniSign
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       OUTPUT_DIR: ${{ github.workspace }}/dist/release
       RELEASE_NOTES_PATH: ${{ github.workspace }}/dist/release-notes.md
     steps:
-      - name: Check out the tagged source
+      - name: Check out the release source
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Validate release tag and source revision
         id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tag must use vX.Y.Z: $RELEASE_TAG" >&2
-            exit 2
+          release_tag="$RELEASE_TAG"
+          source_commit=$(git rev-parse HEAD)
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && -z "$INPUT_TAG" ]]; then
+            if [[ "$DRY_RUN" != true ]]; then
+              echo 'A release tag is required when dry_run is false.' >&2
+              exit 2
+            fi
+            release_tag="v$(tr -d '\r\n' < VERSION)"
+          else
+            if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Release tag must use vX.Y.Z: $release_tag" >&2
+              exit 2
+            fi
           fi
           git fetch origin main:refs/remotes/origin/main
-          tag_commit=$(git rev-parse "$RELEASE_TAG^{commit}")
-          git merge-base --is-ancestor "$tag_commit" origin/main || {
-            echo "Release tag must point to a commit contained in origin/main" >&2
+          git merge-base --is-ancestor "$source_commit" origin/main || {
+            echo "Source revision must be contained in origin/main" >&2
             exit 2
           }
-          version=${RELEASE_TAG#v}
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must use vX.Y.Z: $release_tag" >&2
+            exit 2
+          fi
+          version=${release_tag#v}
           test "$(tr -d '\r\n' < VERSION)" = "$version" || {
-            echo "Tag $RELEASE_TAG does not match VERSION $(cat VERSION)" >&2
+            echo "Tag $release_tag does not match VERSION $(cat VERSION)" >&2
             exit 2
           }
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Read pinned Gateway contract revision
@@ -109,8 +132,8 @@ jobs:
           MINISIGN_PUBLIC_KEY_BASE64: ${{ vars.MINISIGN_PUBLIC_KEY_BASE64 }}
         run: |
           set -eu
-          test -n "$MINISIGN_SECRET_KEY_BASE64" || { echo 'Set release environment variable MINISIGN_SECRET_KEY_BASE64.' >&2; exit 2; }
-          test -n "$MINISIGN_PUBLIC_KEY_BASE64" || { echo 'Set release environment variable MINISIGN_PUBLIC_KEY_BASE64.' >&2; exit 2; }
+          test -n "$MINISIGN_SECRET_KEY_BASE64" || { echo 'Set MiniSign environment secret MINISIGN_SECRET_KEY_BASE64.' >&2; exit 2; }
+          test -n "$MINISIGN_PUBLIC_KEY_BASE64" || { echo 'Set MiniSign environment variable MINISIGN_PUBLIC_KEY_BASE64.' >&2; exit 2; }
           private_key="$RUNNER_TEMP/minisign.key"
           public_key="$RUNNER_TEMP/minisign.pub"
           printf '%s' "$MINISIGN_SECRET_KEY_BASE64" | base64 --decode > "$private_key"
@@ -122,14 +145,15 @@ jobs:
 
       - name: Build and verify release assets
         env:
-          TAG: ${{ env.RELEASE_TAG }}
+          TAG: ${{ steps.release.outputs.tag }}
           FMU_EXECUTOR_SOURCE: ${{ github.workspace }}/.fmu-executor-source
         run: sh packaging/release.sh
 
       - name: Publish GitHub prerelease
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run == false }}
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ steps.release.outputs.tag }}
           name: Lab Station Linux v${{ steps.release.outputs.version }}
           body_path: ${{ env.RELEASE_NOTES_PATH }}
           prerelease: true

@@ -34,9 +34,12 @@ build unsigned release artifacts or reuse a non-empty output directory. Its
 checks verify package metadata, archive signatures, checksums, and the
 public/private signing-key pair.
 
-The GitHub release workflow publishes only tags already contained in `main`.
-It publishes a prerelease because the supported Linux distro, desktop, and
-hardware matrix has not yet been certified.
+The GitHub release workflow publishes only valid version tags already contained
+in `main`. A manual run defaults to a dry run: with no tag supplied it builds
+the current revision, signs and verifies the assets, and skips publication.
+Manual publication requires an existing version tag and `dry_run` set to
+`false`. Published releases remain prereleases because the supported Linux
+distro, desktop, and hardware matrix has not yet been certified.
 
 Create a dedicated, unencrypted CI key pair on a trusted offline machine:
 
@@ -46,7 +49,7 @@ base64 -w0 minisign.key
 base64 -w0 minisign.pub
 ```
 
-In the GitHub repository, create a `release` environment and add the first
+In the GitHub repository, create a `MiniSign` environment and add the first
 base64 value as the `MINISIGN_SECRET_KEY_BASE64` environment secret and the
 second as the `MINISIGN_PUBLIC_KEY_BASE64` environment variable. Restrict the
 environment to trusted maintainers and require review before deployment. Do

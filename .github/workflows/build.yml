@@ -2,6 +2,8 @@ name: Linux agent build
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
 
 concurrency:
@@ -65,9 +67,9 @@ jobs:
       - name: Smoke test optional FMU-free bundles
         run: env -u FMU_EXECUTOR_SOURCE sh packaging/test-build.sh
       - name: Smoke test installer in a disposable container
-        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src public.ecr.aws/docker/library/golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; sh packaging/test-install.sh'
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src mirror.gcr.io/library/ubuntu:24.04 sh -lc 'sh packaging/test-install.sh'
       - name: Exercise privileged setup in a disposable container
-        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src public.ecr.aws/docker/library/golang:1.27.0 sh -lc 'export PATH=/usr/local/go/bin:$PATH; apt-get update; apt-get install -y sudo; sh packaging/test-setup.sh'
+        run: docker run --rm -v "${{ github.workspace }}:/src" -w /src mirror.gcr.io/library/ubuntu:24.04 sh -lc 'set -eu; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y sudo; sh packaging/test-setup.sh'
 
   distro-setup-smoke:
     name: Setup smoke (${{ matrix.distro.name }})

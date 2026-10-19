@@ -30,10 +30,12 @@ dependency installation uses the configured Python package index. Keep TCP
 8091 reachable only from the private Lab Gateway network, and enroll the
 internal token through Gateway's station secret operation.
 
-The amd64 release bundle includes the Linux x64 Smart Factory demo FMU, its
-same-stem GLB, and its license in the FMU data directory. The pinned Executor
-serves the scene only to the authenticated Gateway through its internal
-companion-scene endpoint. The arm64 bundle omits this x86_64-only demo model.
+The amd64 release bundle includes the Linux x64 Smart Factory and Smart
+Warehouse demo FMUs and their companion assets in the FMU data directory. The
+Warehouse pair includes both a GLB and an optional static Three.js app ZIP.
+The pinned Executor serves these assets only to the authenticated Gateway
+through its internal companion-asset endpoint. The arm64 bundle omits these
+x86_64-only demo models.
 
 ## Build
 

@@ -2,7 +2,7 @@
   "repository": "DecentraLabsCom/FMU-Executor",
   "assetSet": "examples/smart-factory-cell",
   "files": {
-    "SmartFactoryCell-linux64.fmu": "b744949d6e5627a7342909c5be25b58d774526c0d2432ef1e14997a7636b24b9",
+    "SmartFactoryCell-linux64.fmu": "6840b29ee37ac7f4d09189a4a8f034db4a47cd1fd68b1de9673a15635dfede2f",
     "smart-factory-cell.glb": "316a594d0fecf900d17a4a295335ac92d5498ed211807828263519d1c0bdd1ad",
     "LICENSE.txt": "0d2d92fc3f4713de29d06b03651360b4c734c2e5f2678cf51f87abe22c9581b0"
   }

@@ -31,6 +31,8 @@ printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
     fail 'FMU_EXECUTOR_SOURCE is required for a complete Linux release'
 [ -d "$FMU_EXECUTOR_SOURCE" ] ||
     fail 'FMU_EXECUTOR_SOURCE must point to the pinned FMU Executor Git checkout'
+[ -d "$FMU_EXECUTOR_SOURCE/examples/smart-factory-cell" ] ||
+    fail 'The pinned FMU Executor checkout must contain the canonical Smart Factory demo assets'
 [ -f "$ROOT/CHANGELOG.md" ] || fail 'CHANGELOG.md is required for release notes'
 
 for command in go fpm dpkg-deb rpm minisign sha256sum tar; do

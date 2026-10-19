@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0] - 2026-10-19
+
+### Added
+- Include the Linux x64 Smart Factory FMU and companion GLB in amd64 Station
+  releases, pinned to the canonical FMU Executor example assets.
+- Expose companion GLB assets to the authenticated Gateway through the shared
+  FMU Executor service.
+
+### Changed
+- Keep the arm64 Station packages free of the x86_64-only demo model.
+
 ## [0.3.0] - 2026-10-09
 
 ### Added

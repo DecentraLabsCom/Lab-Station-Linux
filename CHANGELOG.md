@@ -3,8 +3,8 @@
 ## [0.4.0] - 2026-10-19
 
 ### Added
-- Include the Linux x64 Smart Factory FMU and companion GLB in amd64 Station
-  releases, pinned to the canonical FMU Executor example assets.
+- Include the Linux x64 Smart Warehouse FMU, companion GLB and Three.js app in
+  amd64 Station releases, pinned to the canonical FMU Executor assets.
 - Expose companion GLB assets to the authenticated Gateway through the shared
   FMU Executor service.
 

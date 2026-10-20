@@ -2,9 +2,9 @@
   "repository": "DecentraLabsCom/FMU-Executor",
   "assetSet": "examples/smart-warehouse-cell",
   "files": {
-    "SmartWarehouseCell-linux64.fmu": "2ffe7d008df3b998f3e24bde723942a80bc4329b3e6f749f3a6256af0cfcdf4d",
-    "smart-warehouse-cell.glb": "7f1c37278222b107dc275da80b2c67a4caefc545df4e625e0ad3b530def57c8b",
-    "SmartWarehouseCell.webapp.zip": "cb36c337794ce36ae87c77f9970ea78d8c700267b85a93c01f4de910df451699",
+    "SmartWarehouseCell-linux64.fmu": "310c44c0efc3ebe91c68ef40c2b9e3db1de821811bbd57e80e95d16706358ce5",
+    "smart-warehouse-cell.glb": "7e52c4e5820fb5c175bc1905b71ea1106676119706e8b256bd83233bdc0eec13",
+    "SmartWarehouseCell.webapp.zip": "24572938e2dad2e4e110d273eb387f0af47d507fd2be5558d6557dd35383c742",
     "LICENSE.txt": "0d2d92fc3f4713de29d06b03651360b4c734c2e5f2678cf51f87abe22c9581b0"
   }
 }

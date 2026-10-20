@@ -44,14 +44,14 @@ for arch in amd64 arm64; do
         grep -F '"fmuExecutorRuntimeSha256":null' "$manifest" >/dev/null
     fi
     if [ "$arch" = amd64 ] && [ -n "$VALID_FMU_SOURCE" ]; then
-        grep -F '"smartFactoryDemo":true' "$manifest" >/dev/null
-        for demo_file in SmartFactoryCell.fmu SmartFactoryCell.glb SmartFactoryCell.LICENSE.txt; do
+        grep -F '"smartWarehouseDemo":true' "$manifest" >/dev/null
+        for demo_file in SmartWarehouseCell.fmu SmartWarehouseCell.glb SmartWarehouseCell.webapp.zip SmartWarehouseCell.LICENSE.txt; do
             tar -tzf "$archive" | grep -F "payload/var/lib/decentralabs/fmu-executor/fmu-data/$demo_file" >/dev/null
         done
     else
-        grep -F '"smartFactoryDemo":false' "$manifest" >/dev/null
-        if tar -tzf "$archive" | grep -F 'payload/var/lib/decentralabs/fmu-executor/fmu-data/SmartFactoryCell.' >/dev/null; then
-            echo "Unexpected Smart Factory assets in the $arch bundle without a compatible x86_64 FMU." >&2
+        grep -F '"smartWarehouseDemo":false' "$manifest" >/dev/null
+        if tar -tzf "$archive" | grep -F 'payload/var/lib/decentralabs/fmu-executor/fmu-data/SmartWarehouseCell.' >/dev/null; then
+            echo "Unexpected Smart Warehouse assets in the $arch bundle without a compatible x86_64 FMU." >&2
             exit 1
         fi
     fi

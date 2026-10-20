@@ -24,15 +24,14 @@ be installed separately.
 Update the Linux pin and the Windows station's `fmu-executor/SOURCE.lock.json`
 together only after reviewing the shared FMU Executor release.
 
-The pinned checkout provides `examples/smart-factory-cell` and
-`examples/smart-warehouse-cell`. The packager verifies each Linux x64 FMU and
-its standalone GLB against the corresponding asset lock, then checks that the
-GLB embedded in each FMU matches the standalone file. For Smart Warehouse it
-also checks that the app ZIP contains the same GLB. The amd64 bundle installs
-the FMUs and companions in `/var/lib/decentralabs/fmu-executor/fmu-data`;
-Lab Manager can import either visual asset through the authenticated
+The pinned checkout provides `examples/smart-warehouse-cell`. The packager
+verifies its Linux x64 FMU and standalone GLB against the asset lock, then
+checks that the GLB embedded in the FMU and included in the app ZIP matches the
+standalone file. The amd64 bundle installs the FMU and companions in
+`/var/lib/decentralabs/fmu-executor/fmu-data`; Lab Manager can import either
+visual asset through the authenticated
 `GET /internal/fmu/companion-asset?assetType=...` endpoint. The arm64 bundle
-deliberately omits these x86_64-only demo models; providers can still provision
+deliberately omits this x86_64-only demo model; providers can still provision
 their own arm64-compatible FMUs there.
 
 ## Preparing a GitHub release

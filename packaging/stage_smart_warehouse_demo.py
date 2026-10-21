@@ -19,6 +19,15 @@ ASSET_OUTPUTS = {
 }
 SCENE_ARCHIVE_PATH = "resources/smart-warehouse-cell.glb"
 LINUX_BINARY_PATH = "binaries/linux64/SmartWarehouseCell.so"
+REQUIRED_APP_PROTOCOL_MESSAGES = (
+    "decentralabs:digital-twin-host-ready",
+    "decentralabs:digital-twin-ready",
+    "decentralabs:digital-twin-error",
+    "decentralabs:fmi-sample",
+    "decentralabs:fmi-reset",
+    "decentralabs:fmi-simulation-state",
+    "decentralabs:fmi-samples",
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -61,10 +70,13 @@ def stage_demo(example_root: Path, lock_path: Path, output_dir: Path) -> None:
     if embedded_scene != scene_bytes:
         raise ValueError("Standalone GLB differs from the scene embedded in the Smart Warehouse FMU")
     with zipfile.ZipFile(sources["SmartWarehouseCell.webapp.zip"]) as webapp:
-        if "index.html" not in webapp.namelist() or "warehouse.glb" not in webapp.namelist():
-            raise ValueError("Smart Warehouse app bundle is missing index.html or warehouse.glb")
+        if any(required not in webapp.namelist() for required in ("index.html", "app.js", "warehouse.glb")):
+            raise ValueError("Smart Warehouse app bundle is missing index.html, app.js or warehouse.glb")
         if webapp.read("warehouse.glb") != scene_bytes:
             raise ValueError("Smart Warehouse app bundle uses a different warehouse scene")
+        app_script = webapp.read("app.js").decode("utf-8")
+        if any(message not in app_script for message in REQUIRED_APP_PROTOCOL_MESSAGES):
+            raise ValueError("Smart Warehouse app bundle is missing the Marketplace host protocol")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for source_name, output_name in ASSET_OUTPUTS.items():

@@ -70,11 +70,14 @@ def stage_demo(example_root: Path, lock_path: Path, output_dir: Path) -> None:
     if embedded_scene != scene_bytes:
         raise ValueError("Standalone GLB differs from the scene embedded in the Smart Warehouse FMU")
     with zipfile.ZipFile(sources["SmartWarehouseCell.webapp.zip"]) as webapp:
-        if any(required not in webapp.namelist() for required in ("index.html", "app.js", "warehouse.glb")):
-            raise ValueError("Smart Warehouse app bundle is missing index.html, app.js or warehouse.glb")
-        if webapp.read("warehouse.glb") != scene_bytes:
-            raise ValueError("Smart Warehouse app bundle uses a different warehouse scene")
+        webapp_names = set(webapp.namelist())
+        if any(required not in webapp_names for required in ("index.html", "app.js", "scene.js")):
+            raise ValueError("Smart Warehouse app bundle is missing index.html, app.js or its procedural scene module")
+        if "warehouse.glb" in webapp_names or "vendor/GLTFLoader.js" in webapp_names:
+            raise ValueError("Smart Warehouse Three.js app must build its scene without the GLB companion")
         app_script = webapp.read("app.js").decode("utf-8")
+        if "createSmartWarehouseScene" not in app_script or "scene.js" not in app_script:
+            raise ValueError("Smart Warehouse app does not load its procedural scene module")
         if any(message not in app_script for message in REQUIRED_APP_PROTOCOL_MESSAGES):
             raise ValueError("Smart Warehouse app bundle is missing the Marketplace host protocol")
 

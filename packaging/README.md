@@ -34,6 +34,15 @@ visual asset through the authenticated
 deliberately omits this x86_64-only demo model; providers can still provision
 their own arm64-compatible FMUs there.
 
+The same pinned checkout provides six reference FMUs in
+`examples/reference-fmus`. Linux amd64 releases include all six archives and
+their BSD license. Linux arm64 releases include the three FMI 3 archives that
+contain native aarch64 binaries (`Stair`, `StateSpace`, and `VanDerPol`). The
+packager validates each archive's binary for the target architecture before
+staging it in `/var/lib/decentralabs/fmu-executor/fmu-data`; the remaining
+reference models are available in the FMU-Executor repository for x86_64
+Stations.
+
 ## Preparing a GitHub release
 
 `release.sh` prepares signed portable archives, `.deb` and `.rpm` packages for

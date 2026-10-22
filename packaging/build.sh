@@ -15,6 +15,7 @@ FMU_EXECUTOR_SHA256_JSON=null
 FMU_EXECUTOR_RUNTIME_SHA256_JSON=null
 FMU_TEMP_DIR=
 FMU_WAREHOUSE_STAGE_DIR=
+FMU_REFERENCE_FMU_STAGE_DIR=
 trap 'if [ -n "$FMU_TEMP_DIR" ]; then rm -rf "$FMU_TEMP_DIR"; fi' EXIT HUP INT TERM
 if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
     FMU_EXECUTOR_SOURCE_ROOT=$(CDPATH= cd -- "$FMU_EXECUTOR_SOURCE" && pwd)
@@ -48,6 +49,9 @@ if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
     git -C "$FMU_EXECUTOR_SOURCE_ROOT" -c core.autocrlf=false archive --format=tar \
         "$PINNED_FMU_EXECUTOR_COMMIT" examples/smart-warehouse-cell |
         tar -xf - -C "$FMU_TEMP_DIR"
+    git -C "$FMU_EXECUTOR_SOURCE_ROOT" -c core.autocrlf=false archive --format=tar \
+        "$PINNED_FMU_EXECUTOR_COMMIT" examples/reference-fmus |
+        tar -xf - -C "$FMU_TEMP_DIR"
     test -d "$FMU_EXECUTOR_SOURCE_DIR/app" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/app"
     test -f "$FMU_EXECUTOR_SOURCE_DIR/app/main.py" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/app/main.py"
     test -f "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt"
@@ -80,6 +84,13 @@ if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
         --example-root "$FMU_TEMP_DIR/examples/smart-warehouse-cell" \
         --lock-file "$ROOT/internal/agent/smart_warehouse_demo_assets.lock.json" \
         --output-dir "$FMU_WAREHOUSE_STAGE_DIR"
+    FMU_REFERENCE_FMU_STAGE_DIR="$FMU_TEMP_DIR/reference-fmu-demos"
+    for reference_arch in amd64 arm64; do
+        python3 "$ROOT/packaging/stage_reference_fmus.py" \
+            --source-dir "$FMU_TEMP_DIR/examples/reference-fmus" \
+            --architecture "$reference_arch" \
+            --output-dir "$FMU_REFERENCE_FMU_STAGE_DIR/$reference_arch"
+    done
     FMU_EXECUTOR_VERSION_JSON="\"$FMU_EXECUTOR_VERSION\""
     FMU_EXECUTOR_COMMIT_JSON="\"$SOURCE_COMMIT\""
     FMU_EXECUTOR_SHA256_JSON="\"$SOURCE_SHA256\""
@@ -130,6 +141,15 @@ for GOARCH_VALUE in amd64 arm64; do
         install -m 0644 "$FMU_WAREHOUSE_STAGE_DIR/SmartWarehouseCell.webapp.zip" "$demo_data/SmartWarehouseCell.webapp.zip"
         install -m 0644 "$FMU_WAREHOUSE_STAGE_DIR/SmartWarehouseCell.LICENSE.txt" "$demo_data/SmartWarehouseCell.LICENSE.txt"
         SMART_WAREHOUSE_DEMO_JSON=true
+    fi
+    if [ -n "$FMU_REFERENCE_FMU_STAGE_DIR" ]; then
+        demo_data="$PAYLOAD/var/lib/decentralabs/fmu-executor/fmu-data"
+        mkdir -p "$demo_data"
+        for reference_fmu in "$FMU_REFERENCE_FMU_STAGE_DIR/$GOARCH_VALUE"/*.fmu; do
+            install -m 0644 "$reference_fmu" "$demo_data/$(basename "$reference_fmu")"
+        done
+        install -m 0644 "$FMU_REFERENCE_FMU_STAGE_DIR/$GOARCH_VALUE/Reference-FMUs.LICENSE.txt" \
+            "$demo_data/Reference-FMUs.LICENSE.txt"
     fi
     ARCHIVE="$OUTPUT_DIR/lab-station-linux-$VERSION-linux-$GOARCH_VALUE.tar.gz"
     BUNDLE_ROOT=$(mktemp -d)

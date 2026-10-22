@@ -102,6 +102,12 @@ under `/var/lib/decentralabs/fmu-executor/fmu-data`. Setup creates a Python
 virtual environment and installs the pinned project requirements. Use an
 approved PyPI mirror or pre-populated package cache on isolated hosts.
 
+The amd64 release bundle includes the six reference FMUs, their BSD license,
+and the Smart Warehouse visual demo. The arm64 bundle includes the three
+reference FMUs with native aarch64 binaries; it omits the x86_64-only Smart
+Warehouse demo. New planned digital-twin demos remain local validation
+artifacts and are not included in Station releases.
+
 Before exposing Tiny Desk, set a unique `labuser` password through the
 organization's approved credential process. The profile is not ready until
 xrdp, the configured application, the session launcher, channel restrictions,

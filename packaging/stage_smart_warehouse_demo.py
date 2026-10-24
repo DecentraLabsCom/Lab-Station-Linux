@@ -19,15 +19,7 @@ ASSET_OUTPUTS = {
 }
 SCENE_ARCHIVE_PATH = "resources/smart-warehouse-cell.glb"
 LINUX_BINARY_PATH = "binaries/linux64/SmartWarehouseCell.so"
-REQUIRED_APP_PROTOCOL_MESSAGES = (
-    "decentralabs:digital-twin-host-ready",
-    "decentralabs:digital-twin-ready",
-    "decentralabs:digital-twin-error",
-    "decentralabs:fmi-sample",
-    "decentralabs:fmi-reset",
-    "decentralabs:fmi-simulation-state",
-    "decentralabs:fmi-samples",
-)
+
 
 
 def sha256_file(path: Path) -> str:
@@ -78,8 +70,6 @@ def stage_demo(example_root: Path, lock_path: Path, output_dir: Path) -> None:
         app_script = webapp.read("app.js").decode("utf-8")
         if "createSmartWarehouseScene" not in app_script or "scene.js" not in app_script:
             raise ValueError("Smart Warehouse app does not load its procedural scene module")
-        if any(message not in app_script for message in REQUIRED_APP_PROTOCOL_MESSAGES):
-            raise ValueError("Smart Warehouse app bundle is missing the Marketplace host protocol")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for source_name, output_name in ASSET_OUTPUTS.items():

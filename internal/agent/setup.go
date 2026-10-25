@@ -1423,6 +1423,11 @@ User=labstation-fmu
 Group=labstation-fmu
 EnvironmentFile=-/etc/decentralabs/lab-station/secrets/fmu-internal-token.env
 Environment=FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data
+Environment=FMU_MAX_SIMULATION_STEPS=600000
+Environment=FMU_MAX_INPUT_UPDATES_PER_WINDOW=10000
+Environment=FMU_MAX_OUTPUT_SUBSCRIPTION_HZ=1000
+Environment=FMU_MAX_INPUT_SCHEDULE_EVENTS=120000
+Environment=FMU_MAX_INPUT_SCHEDULE_BYTES=16777216
 WorkingDirectory=/opt/decentralabs/fmu-executor
 ExecStart=/opt/decentralabs/fmu-executor/.venv/bin/python -m app
 Restart=on-failure
@@ -1458,7 +1463,7 @@ WantedBy=multi-user.target
 			return err
 		}
 		if withFMU {
-			fmuScript := "#!/sbin/openrc-run\ncommand=/opt/decentralabs/fmu-executor/.venv/bin/python\ncommand_args=\"-m app\"\ncommand_user=labstation-fmu:labstation-fmu\ncommand_background=true\npidfile=/run/${RC_SVCNAME}.pid\noutput_log=/var/log/decentralabs/lab-station/fmu-executor.log\nerror_log=/var/log/decentralabs/lab-station/fmu-executor.log\nstart_pre() { [ -r /etc/decentralabs/lab-station/secrets/fmu-internal-token.env ] || return 1; . /etc/decentralabs/lab-station/secrets/fmu-internal-token.env; export FMU_INTERNAL_TOKEN_B64; export FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data; }\n"
+			fmuScript := "#!/sbin/openrc-run\ncommand=/opt/decentralabs/fmu-executor/.venv/bin/python\ncommand_args=\"-m app\"\ncommand_user=labstation-fmu:labstation-fmu\ncommand_background=true\npidfile=/run/${RC_SVCNAME}.pid\noutput_log=/var/log/decentralabs/lab-station/fmu-executor.log\nerror_log=/var/log/decentralabs/lab-station/fmu-executor.log\nstart_pre() { [ -r /etc/decentralabs/lab-station/secrets/fmu-internal-token.env ] || return 1; . /etc/decentralabs/lab-station/secrets/fmu-internal-token.env; export FMU_INTERNAL_TOKEN_B64; export FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data; export FMU_MAX_SIMULATION_STEPS=600000; export FMU_MAX_INPUT_UPDATES_PER_WINDOW=10000; export FMU_MAX_OUTPUT_SUBSCRIPTION_HZ=1000; export FMU_MAX_INPUT_SCHEDULE_EVENTS=120000; export FMU_MAX_INPUT_SCHEDULE_BYTES=16777216; }\n"
 			if err := os.WriteFile("/etc/init.d/decentralabs-labstation-fmu", []byte(fmuScript), 0755); err != nil {
 				return err
 			}

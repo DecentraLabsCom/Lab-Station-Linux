@@ -1,152 +1,108 @@
-# Lab Station Linux
+---
+description: Linux implementation of DecentraLabs Lab Station, paired with the Windows station agent.
+---
 
-Native Linux station agent for Lab Gateway. The service is a Go daemon with a
-restricted SSH dispatcher, a small privileged helper, a host-local command
-queue, and an optional Tiny Desk session using xrdp/Xorg. It is a separate
-implementation from the Windows AutoHotkey station and speaks Station Contract
-v3 (`3.0.0`).
+# Lab Station (Linux)
 
-## Current support boundary
+[![Build](https://github.com/DecentraLabsCom/Lab-Station-Linux/actions/workflows/build.yml/badge.svg)](https://github.com/DecentraLabsCom/Lab-Station-Linux/actions/workflows/build.yml)
+[![Security](https://github.com/DecentraLabsCom/Lab-Station-Linux/actions/workflows/codeql.yml/badge.svg)](https://github.com/DecentraLabsCom/Lab-Station-Linux/actions/workflows/codeql.yml)
+[![Release](https://github.com/DecentraLabsCom/Lab-Station-Linux/actions/workflows/release.yml/badge.svg)](https://github.com/DecentraLabsCom/Lab-Station-Linux/actions/workflows/release.yml)
 
-The source contains systemd and OpenRC service adapters and package-manager
-adapters for apt, dnf/yum, zypper, and pacman. These adapters are implemented,
-but none of the distro/desktop/hardware combinations is certified by this
-source checkout. The agent reports `supportTier: unverified` until a release
-team records and publishes a tested support matrix. Release builds target
-Linux `amd64` and `arm64`.
+This is the Linux implementation of DecentraLabs **Lab Station**. It is the
+Linux counterpart to [Lab Station (Windows)](https://github.com/DecentraLabsCom/Lab-Station/blob/main/README.md).
+Both implementations integrate with Lab Gateway and implement Station
+Contract v3; the management transport and host-specific controls differ by
+platform.
 
-The graphical profile uses xrdp with a separate Xorg session and a locked-down
-Openbox configuration with no desktop menus or keyboard/mouse bindings. Its
-session starts the configured lab application directly. It does not install
-GNOME/KDE or replace a local display manager. Setup disables xrdp channel
-redirection because xrdp listens host-wide. The `labuser` account
-needs an operator-managed RDP password before Tiny Desk can become ready. The
-service never sets that password. For managed hosts, install OS dependencies
-through the normal configuration tool and pass `--no-install-deps`.
+The Linux agent is a Go service with a restricted SSH dispatcher. It can manage
+station operations and, when configured, a Tiny Desk graphical session or the
+optional FMU Executor.
 
-`fmu-only` skips Xorg, xrdp, and Openbox. The shared FMU Executor can be
-installed from its pinned source checkout with `--fmu-executor-source`;
-dependency installation uses the configured Python package index. Keep TCP
-8091 reachable only from the private Lab Gateway network, and enroll the
-internal token through Gateway's station secret operation.
+## Product and platform support
 
-The amd64 release bundle includes the Linux x64 Smart Warehouse demo FMU and
-its companion GLB and static Three.js app ZIP in the FMU data directory. The
-pinned Executor serves these assets only to the authenticated Gateway through
-its internal companion-asset endpoint. The arm64 bundle omits this
-x86_64-only demo model.
+Linux packages target `amd64` and `arm64`. The current release reports
+`supportTier: unverified` and is published as a prerelease: the distribution,
+desktop, and hardware combinations have not yet been certified. Use the
+[operator runbook](docs/operator-runbook.md) for a canary installation and
+readiness checks.
 
-## Build
+## Deployment profiles
 
-Use Go 1.23 or newer:
+| Profile | Intended use |
+|---|---|
+| `dedicated` | Linux host dedicated to remote laboratory use. |
+| `hybrid` | Host shared with a local instructor; local sessions are protected during remote reservations. |
+| `fmu-only` | Headless FMU endpoint; does not install Tiny Desk graphical components. |
 
-```sh
-go build ./cmd/labstationctl
-go build ./cmd/labstationd
-go build ./cmd/labstation-dispatcher
-go build ./cmd/labstation-helper
-```
+Windows uses `server` and `hybrid`; Linux defines `dedicated`, `hybrid`, and
+`fmu-only`. Profile setup behavior is platform-specific.
 
-Portable payloads and package roots are produced by `packaging/build.sh`.
-`packaging/build-packages.sh` derives `.deb` and `.rpm` files from those same
-roots and requires `fpm`. Release signing uses Minisign when
-`MINISIGN_SECRET_KEY` is supplied; a release pipeline must require signing and
-publish the corresponding public key separately. Tagged `vX.Y.Z` builds are
-published as GitHub prereleases after the release workflow verifies the tag,
-the pinned FMU Executor source, package metadata, checksums, and signatures.
-The Linux support matrix is still unverified, so these releases remain marked
-as prereleases until that matrix is certified. See
-[packaging/README.md](packaging/README.md) for key setup and verification.
+## Install and operate
 
-## Install
-
-Extract the portable release archive and run `install.sh` from the extracted
-bundle root, which contains `install.sh` and `payload/`. The installer places
-the binaries and defaults; the operator supplies the station's SSH key and
-profile:
+Download and verify a bundle from the
+[Linux releases](https://github.com/DecentraLabsCom/Lab-Station-Linux/releases),
+extract it, and run `install.sh` as root. For example:
 
 ```sh
-sudo ./install.sh --profile dedicated --management-public-key 'ssh-ed25519 AAAA...'
-```
-
-To have setup enable Wake-on-LAN and reapply it at boot for an explicitly
-selected network interface, add `--wake-interface enp1s0`. The setup records
-the previous driver mode and the uninstaller restores it only if the interface
-still has the mode Lab Station applied.
-
-Choose `hybrid` to allow local instructor sessions, or `fmu-only` for a
-headless FMU endpoint. `labstationctl setup --help` lists setup options. The
-management key is installed for `labstation-ops`; SSH password login, PTY,
-forwarding, user startup files, and shell commands are disabled for that
-account. The Gateway host key must still be confirmed and pinned in Lab
-Gateway before it sends station commands.
-
-For an optional shared FMU Executor checkout:
-
-```sh
-sudo ./install.sh --profile fmu-only \
+sudo ./install.sh \
+  --profile dedicated \
   --management-public-key 'ssh-ed25519 AAAA...'
 ```
 
-Build the bundle with `FMU_EXECUTOR_SOURCE` set to a clean FMU Executor checkout
-at the pinned version and commit. The installer detects the bundled source and
-setup verifies its lock plus runtime file digest before installation. The
-station pins the source tree in `internal/agent/fmu_executor_sha256.txt` and the
-installed runtime content in `fmu_executor_payload_sha256.txt`.
+Choose the approved profile and use the management public key configured for
+the Station in Lab Gateway. The
+[operator runbook](docs/operator-runbook.md) covers Gateway host-key
+confirmation, dependency management, graphical-session credentials, and
+readiness checks.
 
-For direct setup outside the installer, pass `--fmu-executor-source` pointing
-to the packaged `fmu-executor-source` directory, which must include
-`SOURCE.lock.json`; a raw checkout without that generated lock is rejected.
-The source tree is copied into `/opt/decentralabs/fmu-executor`; FMUs are stored
-under `/var/lib/decentralabs/fmu-executor/fmu-data`. Setup creates a Python
-virtual environment and installs the pinned project requirements. Use an
-approved PyPI mirror or pre-populated package cache on isolated hosts.
-
-The amd64 release bundle includes the six reference FMUs, their BSD license,
-and the Smart Warehouse visual demo. The arm64 bundle includes the three
-reference FMUs with native aarch64 binaries; it omits the x86_64-only Smart
-Warehouse demo.
-
-Before exposing Tiny Desk, set a unique `labuser` password through the
-organization's approved credential process. The profile is not ready until
-xrdp, the configured application, the session launcher, channel restrictions,
-and the RDP account are all ready.
-
-## Operations
+Useful local checks:
 
 ```sh
 sudo labstationctl status-json
-sudo labstationctl local-mode status
-sudo labstationctl local-mode set --ttl=28800
-sudo labstationctl local-mode clear
 sudo labstationctl energy audit
-sudo labstationctl recovery reboot-if-needed
+sudo labstationctl local-mode status
 ```
 
-Local mode expires after eight hours by default. Use `--ttl=seconds` to set a
-bounded lifetime from 60 seconds to 24 hours.
+## Lab Gateway integration
 
-The SSH dispatcher accepts a single structured JSON request on stdin and
-returns a JSON result. Exit code `0` means success, `1` means completed with a
-warning, and `2+` means failure. It accepts only named station operations; the
-Gateway never receives a shell on the station.
+Gateway manages Linux stations through a restricted SSH account and a
+structured, allowlisted command dispatcher; it does not receive a shell on the
+host. Gateway's private key is stored in its protected credential store, and
+the station host key must be confirmed and pinned before remote operations.
+Linux emits Station Contract v3 (`3.0.0`) and shares cross-platform status,
+session, power, and recovery test scenarios with the Windows implementation.
 
-Status, heartbeat, operation, command queue, and session audit data are stored
-under `/var/lib/decentralabs/lab-station` and
-`/var/log/decentralabs/lab-station`. The queue accepts only JSON allowlisted
-operations and never accepts secret values.
+See the [Linux operator runbook](docs/operator-runbook.md) and
+[Station Contract guide](contracts/README.md) for the operational and schema
+details.
 
-## Contract and security
+## Optional FMU execution
 
-The schema source and shared fixtures are in
-`Lab Gateway/contracts/station/v3/`. A contract release must validate both
-Windows and Linux payloads against this source. Private SSH credentials stay
-encrypted in Lab Gateway. Station secrets are sent through the authenticated
-dispatcher channel, written root-only, and never accepted from the command
-queue. The privileged helper has a fixed operation set for session termination,
-power, service control, and FMU token file operations.
+The shared FMU Executor can be included from its pinned source when building a
+Linux release. It is a separate optional service; FMU models and companion
+visual assets are stored separately under the FMU data directory. Release
+bundles may include selected examples; provider-specific models are provisioned
+separately. Model availability depends on the release architecture. See
+[Linux release packaging](packaging/README.md) for bundle contents and the
+[FMU Executor repository](https://github.com/DecentraLabsCom/FMU-Executor) for
+the shared runtime contract.
 
-Read [contracts/README.md](contracts/README.md) and
-[packaging/README.md](packaging/README.md) for release details. The
-The [operator runbook](docs/operator-runbook.md) covers canary setup, Gateway
-trust confirmation, routine checks, rollback, and evidence handling.
+## Development and releases
+
+The station agent is written in Go and release bundles target Linux `amd64`
+and `arm64`. Packaging, signing, verification, installation, and rollback
+instructions are in [Linux release packaging](packaging/README.md). The
+release remains a prerelease until the platform support matrix is certified.
+
+## Documentation
+
+| Topic | Guide |
+|---|---|
+| Documentation navigation | [Contents](SUMMARY.md) |
+| Installation, Gateway onboarding, and recovery | [Linux operator runbook](docs/operator-runbook.md) |
+| Station contract and shared test scenarios | [Station Contract](contracts/README.md) |
+| FMU Executor bundle, model contents, build, signing, release, and rollback | [Linux release packaging](packaging/README.md) |
+| Shared FMU Executor behavior and API | [FMU Executor repository](https://github.com/DecentraLabsCom/FMU-Executor) |
+
+For the corresponding Windows implementation, see the
+[Lab Station Windows README](https://github.com/DecentraLabsCom/Lab-Station/blob/main/README.md).

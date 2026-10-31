@@ -325,7 +325,7 @@ func TestSetupEndToEnd(t *testing.T) {
 		t.Errorf("FMU service unit was not installed for the supplied source: %v", err)
 	}
 	fmuService, fmuServiceErr := os.ReadFile("/etc/systemd/system/decentralabs-labstation-fmu.service")
-	if fmuServiceErr != nil || !strings.Contains(string(fmuService), "Environment=FMU_MAX_SIMULATION_PARAMETERS=128") {
+	if fmuServiceErr != nil || !strings.Contains(string(fmuService), "Environment=FMU_MAX_SIMULATION_PARAMETERS=256") {
 		t.Errorf("systemd FMU service omitted the shared parameter ceiling: %q, %v", fmuService, fmuServiceErr)
 	}
 	if info, err := os.Stat("/var/lib/decentralabs/fmu-executor/fmu-data"); err != nil || info.Mode().Perm() != 0o750 {
@@ -443,7 +443,7 @@ func TestSetupEndToEnd(t *testing.T) {
 		}
 	}
 	fmuOpenRC, fmuOpenRCErr := os.ReadFile("/etc/init.d/decentralabs-labstation-fmu")
-	if fmuOpenRCErr != nil || !strings.Contains(string(fmuOpenRC), "FMU_MAX_SIMULATION_PARAMETERS=128") {
+	if fmuOpenRCErr != nil || !strings.Contains(string(fmuOpenRC), "FMU_MAX_SIMULATION_PARAMETERS=256") {
 		t.Errorf("OpenRC FMU service omitted the shared parameter ceiling: %q, %v", fmuOpenRC, fmuOpenRCErr)
 	}
 	if err := startManagementServices(openRCCfg); err != nil {

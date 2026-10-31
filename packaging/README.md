@@ -24,6 +24,12 @@ be installed separately.
 Update the Linux pin and the Windows station's `fmu-executor/SOURCE.lock.json`
 together only after reviewing the shared FMU Executor release.
 
+The pinned runtime understands FMI-LS-REF companion declarations. It prefers
+the declared webapp ZIP (or a same-stem `.webapp.zip`), then the declared GLB,
+then a same-stem `.glb`. Keep the Linux pin and Windows snapshot on the same
+reviewed Executor commit so Gateway receives consistent companion discovery
+from either Station platform.
+
 The pinned checkout provides `examples/smart-warehouse-cell`. The packager
 verifies its Linux x64 FMU and standalone GLB against the asset lock, then
 checks that the GLB embedded in the FMU and included in the app ZIP matches the

@@ -185,8 +185,12 @@ grep -q 'sudo -n --preserve-env=LABSTATION_CONFIG --user=labstationd' /usr/lib/d
 test "$(stat -c '%a' /etc/sudoers.d/decentralabs-lab-station)" = 440
 grep -q '^labstationd ALL=(root) NOPASSWD:' /etc/sudoers.d/decentralabs-lab-station
 grep -q '^labuser ALL=(root) NOPASSWD:' /etc/sudoers.d/decentralabs-lab-station
-! id -nG labstation-ops | tr ' ' '\n' | grep -qx labstation
-! id -nG labstation-fmu | tr ' ' '\n' | grep -qx labstation
+for account in labstation-ops labstation-fmu; do
+    if id -nG "$account" | tr ' ' '\n' | grep -qx labstation; then
+        echo "$account must not belong to the labstation group" >&2
+        exit 1
+    fi
+done
 id -nG labstation-fmu | tr ' ' '\n' | grep -qx labstation-fmu
 test -d /var/lib/decentralabs/lab-station/data/commands/inbox
 test "$(stat -c '%a' /var/lib/decentralabs/lab-station/data)" = 2770

@@ -155,7 +155,7 @@ func ValidateCommand(command string, args []string) error {
 		return errors.New("too many command arguments")
 	}
 	optionArgs := args
-	validOption := map[string]bool{}
+	var validOption map[string]bool
 	switch command {
 	case "prepare-session":
 		validOption = map[string]bool{"--guard-grace": true, "--guard-message": true, "--guard-silent": true, "--guard-notify": true, "--no-guard": true, "--message": true, "--grace": true, "--silent": true, "--no-notify": true, "--reservation-key": true, "--operation-id": true}
@@ -551,7 +551,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 			rebootTimeout = seconds
 		}
 	}
-	local, remote, sessionsOK := a.hostRuntime().Sessions()
+	_, remote, sessionsOK := a.hostRuntime().Sessions()
 	if !sessionsOK {
 		return 2, "", "session inventory unavailable; refusing to release station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED"}
 	}
@@ -568,7 +568,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	if reboot {
 		deadline := time.Now().Add(time.Duration(rebootTimeout) * time.Second)
 		for {
-			local, remote, sessionsOK = a.hostRuntime().Sessions()
+			local, remote, sessionsOK := a.hostRuntime().Sessions()
 			if !sessionsOK {
 				return 1, "station released; reboot deferred because session inventory is unavailable", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": false, "reason": "session query failed"}
 			}

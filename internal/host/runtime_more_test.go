@@ -106,11 +106,6 @@ func TestEnergyAuditAndSupervisorDetectionExposeTypedState(t *testing.T) {
 	if state.HibernateSupported != (strings.Contains(strings.Join(state.SuspendStates, " "), "disk") && state.ActiveSwap) {
 		t.Fatalf("hibernate capability is inconsistent with reported kernel/swap state: %#v", state)
 	}
-	if _, ok := DetectSupervisor().(Supervisor); ok {
-		// The current host may provide systemd or OpenRC; both satisfy the runtime contract.
-	} else if DetectSupervisor() != nil {
-		t.Fatal("detected supervisor has an unexpected type")
-	}
 	if name, version := DetectDistro(); name == "" || version == "" {
 		t.Fatal("Linux distro metadata is missing")
 	}
@@ -120,11 +115,6 @@ func TestRuntimeWrappersExposeTheLinuxImplementation(t *testing.T) {
 	runtime := NewRuntime()
 	if _, ok := runtime.(LinuxRuntime); !ok {
 		t.Fatalf("NewRuntime returned %T", runtime)
-	}
-	if supervisor := runtime.Supervisor(); supervisor != nil {
-		if _, ok := supervisor.(Supervisor); !ok {
-			t.Fatalf("unexpected supervisor type %T", supervisor)
-		}
 	}
 	_ = runtime.NetworkInterfaces()
 }

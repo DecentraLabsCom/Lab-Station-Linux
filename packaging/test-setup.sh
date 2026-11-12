@@ -30,16 +30,21 @@ EOF
 cat > "$FAKE_BIN/sshd" <<'EOF'
 #!/bin/sh
 case "$1" in
-  -t) [ "${LABSTATION_TEST_SSHD_FAIL:-0}" != 1 ] ;;
+  -t)
+    if [ "${LABSTATION_TEST_SSHD_FAIL:-0}" = 1 ]; then
+      echo 'sshd: Bad configuration option: SyntheticDirective' >&2
+      exit 1
+    fi
+    ;;
   -T)
-    cat <<'SETTINGS'
+    cat <<SETTINGS
 port 22
 port 2222
 authenticationmethods publickey
 passwordauthentication no
 kbdinteractiveauthentication no
 permituserrc no
-permituserenvironment no
+permituserenvironment ${LABSTATION_TEST_SSHD_PERMIT_USER_ENVIRONMENT:-no}
 forcecommand /usr/lib/decentralabs/lab-station/labstation-dispatcher
 allowtcpforwarding no
 allowagentforwarding no

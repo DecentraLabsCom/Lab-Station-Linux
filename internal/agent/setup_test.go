@@ -401,6 +401,38 @@ func TestSetupEndToEnd(t *testing.T) {
 		!strings.Contains(string(sshConfig), "PasswordAuthentication no") {
 		t.Errorf("management SSH policy was not installed: %q, %v", sshConfig, err)
 	}
+	policyStart := strings.Index(string(sshConfig), "# BEGIN DecentraLabs Lab Station policy")
+	policyEnd := strings.Index(string(sshConfig), "# END DecentraLabs Lab Station policy")
+	if policyStart < 0 || policyEnd <= policyStart {
+		t.Errorf("managed SSH policy block is missing or malformed: %q", sshConfig)
+	} else {
+		policyBlock := string(sshConfig[policyStart:policyEnd])
+		for _, required := range []string{
+			"Match User labstation-ops",
+			"AuthenticationMethods publickey",
+			"PasswordAuthentication no",
+			"KbdInteractiveAuthentication no",
+			"PermitUserRC no",
+			"ForceCommand /usr/lib/decentralabs/lab-station/labstation-dispatcher",
+			"AllowTcpForwarding no",
+			"AllowAgentForwarding no",
+			"X11Forwarding no",
+			"PermitTTY no",
+			"PermitTunnel no",
+		} {
+			if !strings.Contains(policyBlock, required) {
+				t.Errorf("managed SSH policy omitted %q", required)
+			}
+		}
+		if strings.Contains(policyBlock, "PermitUserEnvironment") {
+			t.Error("managed SSH Match block contains PermitUserEnvironment, which Ubuntu 22.04 OpenSSH rejects")
+		}
+	}
+	t.Setenv("LABSTATION_TEST_SSHD_PERMIT_USER_ENVIRONMENT", "yes")
+	if err := installSshPolicy(); err == nil || !strings.Contains(err.Error(), "OpenSSH did not apply the restricted Station management policy") {
+		t.Errorf("effective SSH policy accepted PermitUserEnvironment yes: %v", err)
+	}
+	t.Setenv("LABSTATION_TEST_SSHD_PERMIT_USER_ENVIRONMENT", "no")
 	if _, err := os.Stat("/etc/ssh/sshd_config.decentralabs-lab-station.bak"); err != nil {
 		t.Errorf("original SSH policy was not backed up: %v", err)
 	}
@@ -439,7 +471,8 @@ func TestSetupEndToEnd(t *testing.T) {
 	}
 	t.Setenv("LABSTATION_TEST_SSHD_FAIL", "1")
 	err = Setup(args)
-	if err == nil || !strings.Contains(err.Error(), "OpenSSH rejected the Lab Station user policy") {
+	if err == nil || !strings.Contains(err.Error(), "OpenSSH rejected the Lab Station user policy") ||
+		!strings.Contains(err.Error(), "SyntheticDirective") {
 		t.Fatalf("Setup() did not report invalid SSH policy validation: %v", err)
 	}
 	if restored, readErr := os.ReadFile(sshdConfig); readErr != nil || string(restored) != "PermitRootLogin no\n" {

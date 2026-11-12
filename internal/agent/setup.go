@@ -729,7 +729,7 @@ func installSshPolicy() error {
 		return errors.New("OpenSSH server executable sshd was not found")
 	}
 	path := "/etc/ssh/sshd_config"
-	block := "# BEGIN DecentraLabs Lab Station policy\nMatch User labstation-ops\n    AuthenticationMethods publickey\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitUserRC no\n    PermitUserEnvironment no\n    ForceCommand /usr/lib/decentralabs/lab-station/labstation-dispatcher\n    AllowTcpForwarding no\n    AllowAgentForwarding no\n    X11Forwarding no\n    PermitTTY no\n    PermitTunnel no\n# END DecentraLabs Lab Station policy\n"
+	block := "# BEGIN DecentraLabs Lab Station policy\nMatch User labstation-ops\n    AuthenticationMethods publickey\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitUserRC no\n    ForceCommand /usr/lib/decentralabs/lab-station/labstation-dispatcher\n    AllowTcpForwarding no\n    AllowAgentForwarding no\n    X11Forwarding no\n    PermitTTY no\n    PermitTunnel no\n# END DecentraLabs Lab Station policy\n"
 	original, err := os.ReadFile(path)
 	if err != nil {
 		return errors.New("OpenSSH main configuration is unavailable")
@@ -796,9 +796,14 @@ func installSshPolicy() error {
 			_ = os.Remove(marker)
 		}
 	}
-	if err := exec.Command("sshd", "-t").Run(); err != nil {
+	validationOutput, err := exec.Command("sshd", "-t").CombinedOutput()
+	if err != nil {
 		rollback()
-		return errors.New("OpenSSH rejected the Lab Station user policy")
+		diagnostic := strings.TrimSpace(string(validationOutput))
+		if diagnostic != "" {
+			return fmt.Errorf("OpenSSH rejected the Lab Station user policy: %s: %w", diagnostic, err)
+		}
+		return fmt.Errorf("OpenSSH rejected the Lab Station user policy: %w", err)
 	}
 	out, err := exec.Command("sshd", "-T", "-C", "user=labstation-ops,host=localhost,addr=127.0.0.1").Output()
 	if err != nil {

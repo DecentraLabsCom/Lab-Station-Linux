@@ -1072,6 +1072,27 @@ func (a *Agent) applicationHash() string {
 	if !a.applicationAvailable() {
 		return ""
 	}
+	if len(a.Config.Applications) > 0 {
+		hash := sha256.New()
+		configuration, err := json.Marshal(a.Config.Applications)
+		if err != nil {
+			return ""
+		}
+		_, _ = hash.Write(configuration)
+		for _, application := range a.Config.Applications {
+			path, err := filepath.EvalSymlinks(application.Command)
+			if err != nil {
+				return ""
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return ""
+			}
+			_, _ = hash.Write([]byte{0})
+			_, _ = hash.Write(data)
+		}
+		return hex.EncodeToString(hash.Sum(nil))
+	}
 	path, err := filepath.EvalSymlinks(a.Config.Application.Command)
 	if err != nil {
 		return ""
@@ -1102,7 +1123,21 @@ func (a *Agent) configurationHash() string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 func (a *Agent) applicationAvailable() bool {
-	path := a.Config.Application.Command
+	if len(a.Config.Applications) > 0 {
+		if config.ValidateApplicationLaunches(a.Config.Applications) != nil {
+			return false
+		}
+		for _, application := range a.Config.Applications {
+			if !applicationPathAvailable(application.Command) {
+				return false
+			}
+		}
+		return true
+	}
+	return applicationPathAvailable(a.Config.Application.Command)
+}
+
+func applicationPathAvailable(path string) bool {
 	if !strings.HasPrefix(filepath.Clean(path), "/opt/lab/apps/") {
 		return false
 	}

@@ -221,6 +221,36 @@ func Setup(args []string) error {
 	return nil
 }
 
+// ApplyApplicationProfile refreshes the protected Tiny Desk launch profile and
+// window bindings without rerunning host setup.
+func ApplyApplicationProfile(configPath string) error {
+	if os.Geteuid() != 0 {
+		return errors.New("app apply requires one administrative run as root")
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("unable to load station configuration: %w", err)
+	}
+	if cfg.Profile == "fmu-only" {
+		return errors.New("Tiny Desk is not available for the fmu-only profile")
+	}
+	openboxConfigPath := "/usr/share/decentralabs/lab-station/tiny-desk-rc.xml"
+	if err := os.MkdirAll(filepath.Dir(openboxConfigPath), 0755); err != nil {
+		return err
+	}
+	if err := writeManagedConfig(openboxConfigPath, tinyDeskOpenboxConfig, 0644); err != nil {
+		return err
+	}
+	if err := writeApplicationProfile(cfg); err != nil {
+		return err
+	}
+	supervisor := host.DetectSupervisor()
+	if supervisor == nil {
+		return errors.New("service supervisor unavailable while applying Tiny Desk applications")
+	}
+	return supervisor.ServiceAction(serviceUnit(supervisor.Name(), "decentralabs-labstation.service"), "restart")
+}
+
 func installDependencies(profile string, withFMU bool) error {
 	manager, _ := host.DetectPackageManager()
 	if manager == "" {
@@ -597,6 +627,16 @@ func writeConfig(path string, cfg config.Config) error {
 		args[i] = strconv.Quote(value)
 	}
 	content := fmt.Sprintf("[station]\nname = %s\nprofile = %s\nversion = %s\nstate_dir = %s\nconfig_dir = %s\nlog_dir = %s\nmanagement_user = %s\nmanagement_port = %d\nmanagement_public_key = %s\ntransport = %s\nsupervisor = %s\nguard_grace_seconds = %d\nallow_local_session_eviction = %t\n\n[application]\nid = %s\ncommand = %s\nargs = [%s]\nuser = %s\nclose_timeout_seconds = %d\n", strconv.Quote(cfg.Name), strconv.Quote(cfg.Profile), strconv.Quote(cfg.Version), strconv.Quote(cfg.StateDir), strconv.Quote(cfg.ConfigDir), strconv.Quote(cfg.LogDir), strconv.Quote(cfg.ManagementUser), cfg.ManagementPort, strconv.Quote(cfg.ManagementPublicKey), strconv.Quote(cfg.Transport), strconv.Quote(cfg.Supervisor), cfg.GuardGraceSeconds, cfg.AllowLocalSessionEviction, strconv.Quote(cfg.Application.ID), strconv.Quote(cfg.Application.Command), strings.Join(args, ", "), strconv.Quote(cfg.Application.User), cfg.Application.CloseTimeoutSeconds)
+	if len(cfg.Applications) > 0 {
+		content += "\n"
+		for _, application := range cfg.Applications {
+			applicationArgs := make([]string, len(application.Args))
+			for index, value := range application.Args {
+				applicationArgs[index] = strconv.Quote(value)
+			}
+			content += fmt.Sprintf("[[application.apps]]\nid = %s\ncommand = %s\nargs = [%s]\n\n", strconv.Quote(application.ID), strconv.Quote(application.Command), strings.Join(applicationArgs, ", "))
+		}
+	}
 	if err := atomicWrite(path, []byte(content), 0640); err != nil {
 		return err
 	}
@@ -608,9 +648,10 @@ func writeApplicationProfile(cfg config.Config) error {
 		return nil
 	}
 	profile := struct {
-		StateDir    string             `json:"stateDir"`
-		Application config.Application `json:"application"`
-	}{StateDir: cfg.StateDir, Application: cfg.Application}
+		StateDir     string                     `json:"stateDir"`
+		Application  config.Application         `json:"application"`
+		Applications []config.ApplicationLaunch `json:"applications,omitempty"`
+	}{StateDir: cfg.StateDir, Application: cfg.Application, Applications: cfg.Applications}
 	data, err := json.Marshal(profile)
 	if err != nil {
 		return err
@@ -1054,6 +1095,12 @@ func installTinyDeskSession(cfg config.Config) error {
 	if cfg.Application.Command != "" && !strings.HasPrefix(filepath.Clean(cfg.Application.Command), "/opt/lab/apps/") {
 		return errors.New("Tiny Desk application command must be under /opt/lab/apps")
 	}
+	if len(cfg.Applications) > 0 && cfg.Application.Command != "" {
+		return errors.New("configure either application.command or application.apps, not both")
+	}
+	if err := config.ValidateApplicationLaunches(cfg.Applications); err != nil {
+		return err
+	}
 	if err := configureTinyDeskRdp(); err != nil {
 		return err
 	}
@@ -1183,16 +1230,25 @@ func lookupUserIDs(name string) (accountIDs, error) {
 	return accountIDs{uid: uint32(uid), gid: uint32(gid)}, nil
 }
 
-// The dedicated rc.xml omits every key and mouse binding. Openbox's default
-// configuration exposes a root menu and desktop shortcuts, so Tiny Desk uses
-// this explicit configuration and launches the one approved lab application.
+// The dedicated rc.xml exposes only window switching and closing shortcuts.
+// Openbox's default configuration exposes a root menu and desktop shortcuts.
 const tinyDeskOpenboxConfig = `<?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <desktops>
     <number>1</number>
     <firstdesk>1</firstdesk>
   </desktops>
-  <keyboard/>
+  <keyboard>
+    <keybind key="A-Tab">
+      <action name="NextWindow"/>
+    </keybind>
+    <keybind key="A-S-Tab">
+      <action name="PreviousWindow"/>
+    </keybind>
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+  </keyboard>
   <mouse/>
   <applications>
     <application class="*">

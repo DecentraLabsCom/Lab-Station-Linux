@@ -43,6 +43,58 @@ does not set an RDP password. Before enabling Tiny Desk, set a unique password
 for `labuser` through the organization's approved credential process. Do not
 reuse the Gateway key or an administrator's password.
 
+## Configure Tiny Desk applications
+
+Tiny Desk supports the existing single-application settings and a curated list
+of up to eight applications. Every command must be an executable installed
+under `/opt/lab/apps`; do not point it at a shell. With multiple entries, all
+configured applications start together when the Tiny Desk session begins.
+Openbox provides `Alt+Tab` and `Alt+Shift+Tab` window switching and `Alt+F4`
+window closing. The list is selected by the station administrator in the
+root-managed configuration; it is not a general-purpose application menu.
+
+For a multi-application session, edit
+`/etc/decentralabs/lab-station/station.toml`. Clear the legacy `command` and
+`args` values in `[application]`, then add one `[[application.apps]]` table per
+approved application. For example:
+
+```toml
+[application]
+id = "lab-app"
+command = ""
+args = []
+user = "labuser"
+close_timeout_seconds = 15
+
+[[application.apps]]
+id = "instrument-panel"
+command = "/opt/lab/apps/instrument-panel"
+args = []
+
+[[application.apps]]
+id = "reference-viewer"
+command = "/opt/lab/apps/reference-viewer"
+args = ["--kiosk"]
+```
+
+The example paths are placeholders: install the approved programs there first.
+Keep `id` values unique. After editing, validate and apply the profile as root:
+
+```sh
+sudo labstationctl config-check
+sudo labstationctl app apply
+sudo labstationctl status-json
+```
+
+`app apply` updates the protected launcher profile and Tiny Desk window
+bindings, then restarts the station daemon so readiness reflects the new
+configuration. It does not rerun host setup or change SSH and XRDP
+configuration. The new application set takes effect the next time the
+`labuser` Tiny Desk session starts. `status-json` reports the application
+unavailable until every configured executable exists and is executable. For
+one application, continue using `application.command` and `application.args`
+as before.
+
 ## Confirm Gateway trust and readiness
 
 In Lab Manager, review the discovered SSH host fingerprint against the

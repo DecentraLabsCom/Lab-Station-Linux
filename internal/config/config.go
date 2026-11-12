@@ -18,6 +18,14 @@ type Application struct {
 	CloseTimeoutSeconds int      `json:"closeTimeoutSeconds"`
 }
 
+type ApplicationLaunch struct {
+	ID      string   `json:"id"`
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+}
+
+const MaxApplicationsPerSession = 8
+
 type Config struct {
 	SourcePath                string
 	Name                      string
@@ -34,6 +42,7 @@ type Config struct {
 	GuardGraceSeconds         int
 	AllowLocalSessionEviction bool
 	Application               Application
+	Applications              []ApplicationLaunch
 }
 
 func Defaults() Config {
@@ -63,6 +72,17 @@ func Load(path string) (Config, error) {
 	for lineNo := 1; scanner.Scan(); lineNo++ {
 		line := strings.TrimSpace(stripComment(scanner.Text()))
 		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[[") && strings.HasSuffix(line, "]]" ) {
+			section = strings.TrimSpace(line[2 : len(line)-2])
+			if section != "application.apps" {
+				return cfg, fmt.Errorf("station.toml:%d: unsupported array table %s", lineNo, section)
+			}
+			if len(cfg.Applications) >= MaxApplicationsPerSession {
+				return cfg, fmt.Errorf("station.toml:%d: at most %d applications may be configured", lineNo, MaxApplicationsPerSession)
+			}
+			cfg.Applications = append(cfg.Applications, ApplicationLaunch{})
 			continue
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
@@ -108,6 +128,9 @@ func Load(path string) (Config, error) {
 	if !filepath.IsAbs(cfg.LogDir) || !pathWithin(cfg.LogDir, "/var/log/decentralabs/lab-station") {
 		return cfg, errors.New("log_dir must stay under /var/log/decentralabs/lab-station")
 	}
+	if len(cfg.Applications) > 0 && cfg.Application.Command != "" {
+		return cfg, errors.New("configure either application.command or application.apps, not both")
+	}
 	if cfg.Application.Command != "" && !strings.HasPrefix(cfg.Application.Command, "/") {
 		return cfg, errors.New("application command must be an absolute path")
 	}
@@ -131,7 +154,56 @@ func Load(path string) (Config, error) {
 			return cfg, errors.New("application.args contains unsupported shell or control characters")
 		}
 	}
+	if err := ValidateApplicationLaunches(cfg.Applications); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+func ValidateApplicationLaunches(applications []ApplicationLaunch) error {
+	if len(applications) > MaxApplicationsPerSession {
+		return fmt.Errorf("at most %d applications may be configured", MaxApplicationsPerSession)
+	}
+	seen := make(map[string]struct{}, len(applications))
+	for index, application := range applications {
+		if !validApplicationID(application.ID) {
+			return fmt.Errorf("application.apps[%d].id must start with a letter or digit and contain only letters, digits, dot, underscore, or hyphen", index)
+		}
+		if _, ok := seen[application.ID]; ok {
+			return fmt.Errorf("application.apps[%d].id is duplicated", index)
+		}
+		seen[application.ID] = struct{}{}
+		cleanCommand := filepath.Clean(application.Command)
+		if !filepath.IsAbs(application.Command) || !pathWithin(cleanCommand, "/opt/lab/apps") || cleanCommand == "/opt/lab/apps" {
+			return fmt.Errorf("application.apps[%d].command must be an absolute path under /opt/lab/apps", index)
+		}
+		name := strings.ToLower(filepath.Base(cleanCommand))
+		switch name {
+		case "sh", "bash", "dash", "zsh", "fish", "env":
+			return fmt.Errorf("application.apps[%d].command must name an application executable, not a shell", index)
+		}
+		if len(application.Args) > 32 {
+			return fmt.Errorf("application.apps[%d].args may contain at most 32 values", index)
+		}
+		for _, arg := range application.Args {
+			if len(arg) > 1024 || strings.ContainsAny(arg, "\r\n\x00`$|;&><") {
+				return fmt.Errorf("application.apps[%d].args contains unsupported shell or control characters", index)
+			}
+		}
+	}
+	return nil
+}
+
+func validApplicationID(value string) bool {
+	if len(value) == 0 || len(value) > 64 || !((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= '0' && value[0] <= '9')) {
+		return false
+	}
+	for _, char := range value[1:] {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func pathWithin(path, root string) bool {
@@ -237,6 +309,22 @@ func (c *Config) assign(section, key string, value any) error {
 			return typeError(key, "integer")
 		}
 		c.Application.CloseTimeoutSeconds = integer
+	case "application.apps.id", "application.apps.command":
+		if len(c.Applications) == 0 || !isString {
+			return typeError(key, "string")
+		}
+		application := &c.Applications[len(c.Applications)-1]
+		if key == "id" {
+			application.ID = text
+		} else {
+			application.Command = text
+		}
+	case "application.apps.args":
+		items, ok := value.([]string)
+		if len(c.Applications) == 0 || !ok {
+			return typeError(key, "string array")
+		}
+		c.Applications[len(c.Applications)-1].Args = items
 	default:
 		return fmt.Errorf("unknown setting %s.%s", section, key)
 	}

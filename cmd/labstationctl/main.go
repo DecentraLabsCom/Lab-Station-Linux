@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -31,13 +32,27 @@ func main() {
 		}
 		return
 	}
-	if command == "app" && len(os.Args) > 2 && os.Args[2] == "launch" {
-		profile, err := loadApplicationProfile("/usr/share/decentralabs/lab-station/app-profile.json")
-		if err != nil || launchApplication(profile) != nil {
-			fmt.Fprintln(os.Stderr, "application launch denied")
-			os.Exit(2)
+	if command == "app" && len(os.Args) > 2 {
+		switch os.Args[2] {
+		case "launch":
+			profile, err := loadApplicationProfile("/usr/share/decentralabs/lab-station/app-profile.json")
+			if err != nil || launchApplication(profile) != nil {
+				fmt.Fprintln(os.Stderr, "application launch denied")
+				os.Exit(2)
+			}
+			return
+		case "apply":
+			cfgPath := os.Getenv("LABSTATION_CONFIG")
+			if cfgPath == "" {
+				cfgPath = "/etc/decentralabs/lab-station/station.toml"
+			}
+			if err := agent.ApplyApplicationProfile(cfgPath); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			fmt.Println("Tiny Desk application profile updated")
+			return
 		}
-		return
 	}
 	cfgPath := os.Getenv("LABSTATION_CONFIG")
 	if cfgPath == "" {
@@ -96,8 +111,9 @@ func load(path string) (config.Config, error) {
 }
 
 type applicationProfile struct {
-	StateDir    string             `json:"stateDir"`
-	Application config.Application `json:"application"`
+	StateDir     string                     `json:"stateDir"`
+	Application  config.Application         `json:"application"`
+	Applications []config.ApplicationLaunch `json:"applications,omitempty"`
 }
 
 func loadApplicationProfile(path string) (applicationProfile, error) {
@@ -134,47 +150,110 @@ func launchApplication(profile applicationProfile) error {
 	if err := requireLeaseAdmission(profile.StateDir); err != nil {
 		return err
 	}
-	application := profile.Application
-	command := application.Command
-	if command == "" || !filepath.IsAbs(command) || !strings.HasPrefix(filepath.Clean(command), "/opt/lab/apps/") {
-		return fmt.Errorf("application command must be inside /opt/lab/apps")
+	applications := profile.Applications
+	legacyApplication := len(applications) == 0
+	if legacyApplication {
+		if profile.Application.Command == "" {
+			return errors.New("no application is configured")
+		}
+		applications = []config.ApplicationLaunch{{ID: profile.Application.ID, Command: profile.Application.Command, Args: profile.Application.Args}}
+	}
+	if !legacyApplication {
+		if err := config.ValidateApplicationLaunches(applications); err != nil {
+			return err
+		}
 	}
 	root, err := filepath.EvalSymlinks("/opt/lab/apps")
 	if err != nil {
 		return fmt.Errorf("application catalog is unavailable")
 	}
-	resolved, err := filepath.EvalSymlinks(command)
-	if err != nil {
-		return fmt.Errorf("application command is unavailable")
+	type launch struct {
+		command string
+		args    []string
 	}
-	relative, err := filepath.Rel(root, resolved)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("application symlink escapes /opt/lab/apps")
+	launches := make([]launch, 0, len(applications))
+	for _, application := range applications {
+		command := application.Command
+		if command == "" || !filepath.IsAbs(command) || !strings.HasPrefix(filepath.Clean(command), "/opt/lab/apps/") {
+			return fmt.Errorf("application command must be inside /opt/lab/apps")
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(command)
+		if resolveErr != nil {
+			return fmt.Errorf("application %s is unavailable", application.ID)
+		}
+		relative, relErr := filepath.Rel(root, resolved)
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("application symlink escapes /opt/lab/apps")
+		}
+		base := strings.ToLower(filepath.Base(resolved))
+		if base == "sh" || base == "bash" || base == "dash" || base == "zsh" || base == "fish" || base == "env" {
+			return fmt.Errorf("shell launchers are not permitted as an application")
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil || info.IsDir() || info.Mode()&0111 == 0 {
+			return fmt.Errorf("application %s is not executable", application.ID)
+		}
+		launches = append(launches, launch{command: resolved, args: application.Args})
 	}
-	base := strings.ToLower(filepath.Base(resolved))
-	if base == "sh" || base == "bash" || base == "dash" || base == "zsh" || base == "fish" || base == "env" {
-		return fmt.Errorf("shell launchers are not permitted as the application")
+	children := make([]*exec.Cmd, 0, len(launches))
+	for _, item := range launches {
+		child := exec.Command(item.command, item.args...)
+		child.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "HOME=" + os.Getenv("HOME"), "DISPLAY=" + os.Getenv("DISPLAY"), "XAUTHORITY=" + os.Getenv("XAUTHORITY")}
+		child.Stdin = os.Stdin
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := child.Start(); err != nil {
+			for _, started := range children {
+				terminateProcessGroup(started.Process.Pid, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds))
+				_ = started.Wait()
+			}
+			return err
+		}
+		children = append(children, child)
 	}
-	info, err := os.Stat(resolved)
-	if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
-		return fmt.Errorf("application is not executable")
+	type waitResult struct {
+		child *exec.Cmd
+		err   error
 	}
-	child := exec.Command(resolved, application.Args...)
-	child.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "HOME=" + os.Getenv("HOME"), "DISPLAY=" + os.Getenv("DISPLAY"), "XAUTHORITY=" + os.Getenv("XAUTHORITY")}
-	child.Stdin = os.Stdin
-	child.Stdout = os.Stdout
-	child.Stderr = os.Stderr
-	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := child.Start(); err != nil {
-		return err
+	results := make(chan waitResult, len(children))
+	for _, child := range children {
+		go func(child *exec.Cmd) { results <- waitResult{child: child, err: child.Wait()} }(child)
 	}
-	err = child.Wait()
-	timeout := time.Duration(application.CloseTimeoutSeconds) * time.Second
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	remaining := len(children)
+	var firstErr error
+	for remaining > 0 {
+		select {
+		case result := <-results:
+			remaining--
+			terminateProcessGroup(result.child.Process.Pid, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds))
+			if result.err != nil && firstErr == nil {
+				firstErr = result.err
+			}
+		case <-signals:
+			for _, child := range children {
+				terminateProcessGroup(child.Process.Pid, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds))
+			}
+			for remaining > 0 {
+				<-results
+				remaining--
+			}
+			return nil
+		}
+	}
+	err = firstErr
+	return err
+}
+
+func applicationCloseTimeout(seconds int) time.Duration {
+	timeout := time.Duration(seconds) * time.Second
 	if timeout < time.Second || timeout > 5*time.Minute {
 		timeout = 15 * time.Second
 	}
-	terminateProcessGroup(child.Process.Pid, timeout)
-	return err
+	return timeout
 }
 
 func requireLeaseAdmission(stateDir string) error {
@@ -284,5 +363,5 @@ func submitQueue(cfg config.Config, args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: labstationctl <status-json|identity|heartbeat|local-mode|prepare-session|release-session|power|setup|config-check>")
+	fmt.Fprintln(os.Stderr, "usage: labstationctl <status-json|identity|heartbeat|local-mode|prepare-session|release-session|power|setup|config-check|app apply>")
 }

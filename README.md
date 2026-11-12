@@ -63,6 +63,14 @@ sudo labstationctl energy audit
 sudo labstationctl local-mode status
 ```
 
+Tiny Desk can launch one configured application or a curated set of up to
+eight applications together. Applications must be installed as executables
+under `/opt/lab/apps`; the root-managed station configuration chooses which
+ones are available in the session. In a multi-application session, use
+`Alt+Tab` / `Alt+Shift+Tab` to switch windows and `Alt+F4` to close one. See
+the [operator runbook](docs/operator-runbook.md#configure-tiny-desk-applications)
+for configuration and update steps.
+
 ## Lab Gateway integration
 
 Gateway manages Linux stations through a restricted SSH account and a

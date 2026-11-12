@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"reflect"
@@ -250,6 +251,9 @@ func TestSetupEndToEnd(t *testing.T) {
 	if err := Setup(noFMUArgs); err != nil {
 		t.Fatalf("Setup() failed without FMU Executor source in isolated systemd container: %v", err)
 	}
+	if _, err := os.Stat("/tmp/labstation-test-usermod.log"); !os.IsNotExist(err) {
+		t.Fatalf("setup called usermod even though labuser already had the protected home: %v", err)
+	}
 	if _, err := user.Lookup("labstation-fmu"); err == nil {
 		t.Fatal("setup created labstation-fmu without an FMU Executor source")
 	}
@@ -313,6 +317,17 @@ func TestSetupEndToEnd(t *testing.T) {
 	}
 	if account, err := user.Lookup("labuser"); err != nil || account.HomeDir != tinyDeskSessionHome {
 		t.Errorf("labuser account home is not the protected Tiny Desk session directory: %#v, %v", account, err)
+	}
+	if err := exec.Command("usermod", "--home", "/home/labuser", "labuser").Run(); err != nil {
+		t.Fatalf("failed to prepare a labuser home change for the diagnostic test: %v", err)
+	}
+	t.Setenv("LABSTATION_TEST_USERMOD_FAIL", "1")
+	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err == nil || !strings.Contains(err.Error(), "Synthetic home update failure") {
+		t.Errorf("Tiny Desk setup did not expose usermod's diagnostic: %v", err)
+	}
+	t.Setenv("LABSTATION_TEST_USERMOD_FAIL", "0")
+	if err := exec.Command("usermod", "--home", tinyDeskSessionHome, "labuser").Run(); err != nil {
+		t.Fatalf("failed to restore the protected labuser home after the diagnostic test: %v", err)
 	}
 	if ids, err := lookupUserIDs("labuser"); err != nil {
 		t.Errorf("labuser uid/gid are unavailable for the writable application workspace: %v", err)

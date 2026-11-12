@@ -109,8 +109,17 @@ EOF
 cat > "$FAKE_BIN/usermod" <<'EOF'
 #!/bin/sh
 if [ "$1" = "--home-dir" ]; then
+  echo "usermod: unrecognized option '--home-dir'" >&2
+  exit 2
+fi
+if [ "$1" = "--home" ]; then
   home=$2
   account=$3
+  if [ "${LABSTATION_TEST_USERMOD_FAIL:-0}" = 1 ]; then
+    echo 'usermod: Synthetic home update failure' >&2
+    exit 1
+  fi
+  printf '%s\n' "$*" >> /tmp/labstation-test-usermod.log
   awk -F: -v account="$account" -v home="$home" 'BEGIN { OFS=":" } $1 == account { $6=home } { print }' /etc/passwd > /etc/passwd.labstation-new
   mv /etc/passwd.labstation-new /etc/passwd
   exit 0
@@ -170,6 +179,7 @@ chmod 0755 "$FAKE_BIN"/*
 export PATH="$FAKE_BIN:$PATH"
 rm -f /tmp/labstation-test-systemctl.log
 rm -f /tmp/labstation-test-openrc.log
+rm -f /tmp/labstation-test-usermod.log
 printf 'd\n' > /tmp/labstation-test-wol-mode
 
 export LABSTATION_SETUP_E2E=1

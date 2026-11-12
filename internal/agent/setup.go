@@ -1055,12 +1055,23 @@ func installTinyDeskSession(cfg config.Config) error {
 			}
 		}
 	}
+	account, err := user.Lookup("labuser")
+	if err != nil {
+		return fmt.Errorf("unable to resolve labuser account: %w", err)
+	}
+	if account.HomeDir != tinyDeskSessionHome {
+		output, err := exec.Command("usermod", "--home", tinyDeskSessionHome, "labuser").CombinedOutput()
+		if err != nil {
+			diagnostic := strings.TrimSpace(string(output))
+			if diagnostic != "" {
+				return fmt.Errorf("unable to set the protected Tiny Desk session home: %s: %w", diagnostic, err)
+			}
+			return fmt.Errorf("unable to set the protected Tiny Desk session home: %w", err)
+		}
+	}
 	userIDs, err := lookupUserIDs("labuser")
 	if err != nil {
 		return err
-	}
-	if err := exec.Command("usermod", "--home-dir", tinyDeskSessionHome, "labuser").Run(); err != nil {
-		return errors.New("unable to set the protected Tiny Desk session home")
 	}
 	workHome := tinyDeskWorkHome
 	for _, directory := range []string{workHome, filepath.Join(workHome, ".cache"), filepath.Join(workHome, ".config"), filepath.Join(workHome, ".local"), filepath.Join(workHome, ".local", "share")} {

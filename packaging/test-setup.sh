@@ -73,10 +73,12 @@ cat > "$FAKE_BIN/useradd" <<'EOF'
 home=/var/lib/empty
 shell=/usr/sbin/nologin
 name=
+primary_group=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --home-dir) shift; home=$1 ;;
     --shell) shift; shell=$1 ;;
+    --gid) shift; primary_group=$1 ;;
     --*) ;;
     *) name=$1 ;;
   esac
@@ -84,8 +86,17 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$name" ] || exit 2
 uid=$(awk -F: 'BEGIN { max=3000 } $3 >= max { max=$3+1 } END { print max }' /etc/passwd)
-getent group "$name" >/dev/null 2>&1 || groupadd --system "$name"
-gid=$(awk -F: -v name="$name" '$1 == name { print $3; exit }' /etc/group)
+if [ -n "$primary_group" ]; then
+  getent group "$primary_group" >/dev/null 2>&1 || exit 6
+  gid=$(awk -F: -v name="$primary_group" '$1 == name { print $3; exit }' /etc/group)
+else
+  if getent group "$name" >/dev/null 2>&1; then
+    echo "useradd: group '$name' already exists" >&2
+    exit 9
+  fi
+  groupadd --system "$name"
+  gid=$(awk -F: -v name="$name" '$1 == name { print $3; exit }' /etc/group)
+fi
 printf '%s:x:%s:%s::%s:%s\n' "$name" "$uid" "$gid" "$home" "$shell" >> /etc/passwd
 mkdir -p "$home"
 EOF

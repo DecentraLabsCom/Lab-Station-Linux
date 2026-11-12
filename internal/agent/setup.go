@@ -105,21 +105,24 @@ func Setup(args []string) error {
 			return err
 		}
 	}
+	withFMU := *fmuSource != ""
 	if !*noInstall {
-		if err := installDependencies(cfg.Profile, *fmuSource != ""); err != nil {
+		if err := installDependencies(cfg.Profile, withFMU); err != nil {
 			return err
 		}
 	}
 	if err := ensureGroup("labstation"); err != nil {
 		return err
 	}
-	if err := ensureGroup("labstation-fmu"); err != nil {
+	if withFMU {
+		if err := ensureGroup("labstation-fmu"); err != nil {
+			return err
+		}
+	}
+	if err := ensureUser("labstationd", "/usr/sbin/nologin", "/var/lib/decentralabs/lab-station", true, true, ""); err != nil {
 		return err
 	}
-	if err := ensureUser("labstationd", "/usr/sbin/nologin", "/var/lib/decentralabs/lab-station", true, true); err != nil {
-		return err
-	}
-	if err := ensureUser("labstation-ops", "/bin/sh", "/var/lib/labstation-ops", true, false); err != nil {
+	if err := ensureUser("labstation-ops", "/bin/sh", "/var/lib/labstation-ops", true, false, ""); err != nil {
 		return err
 	}
 	// OpenSSH rejects accounts marked with a leading !/* even when public-key
@@ -129,12 +132,14 @@ func Setup(args []string) error {
 		return errors.New("unable to disable password login for the SSH management account")
 	}
 	if cfg.Profile != "fmu-only" {
-		if err := ensureUser("labuser", "/bin/sh", tinyDeskSessionHome, false, false); err != nil {
+		if err := ensureUser("labuser", "/bin/sh", tinyDeskSessionHome, false, false, ""); err != nil {
 			return err
 		}
 	}
-	if err := ensureUser("labstation-fmu", "/usr/sbin/nologin", "/var/lib/decentralabs/fmu-executor", true, true); err != nil {
-		return err
+	if withFMU {
+		if err := ensureUser("labstation-fmu", "/usr/sbin/nologin", "/var/lib/decentralabs/fmu-executor", true, true, "labstation-fmu"); err != nil {
+			return err
+		}
 	}
 	if err := addToGroup("labstationd", "labstation"); err != nil {
 		return err
@@ -142,11 +147,13 @@ func Setup(args []string) error {
 	if err := removeFromGroup("labstation-ops", "labstation"); err != nil {
 		return err
 	}
-	if err := removeFromGroup("labstation-fmu", "labstation"); err != nil {
-		return err
-	}
-	if err := addToGroup("labstation-fmu", "labstation-fmu"); err != nil {
-		return err
+	if withFMU {
+		if err := removeFromGroup("labstation-fmu", "labstation"); err != nil {
+			return err
+		}
+		if err := addToGroup("labstation-fmu", "labstation-fmu"); err != nil {
+			return err
+		}
 	}
 	if cfg.Profile != "fmu-only" {
 		if err := addToGroup("labuser", "labstation-lab"); err != nil {
@@ -199,12 +206,12 @@ func Setup(args []string) error {
 			return err
 		}
 	}
-	if *fmuSource != "" {
+	if withFMU {
 		if err := installFmuExecutor(*fmuSource); err != nil {
 			return err
 		}
 	}
-	if err := installSupervisor(cfg, *configPath, *fmuSource != ""); err != nil {
+	if err := installSupervisor(cfg, *configPath, withFMU); err != nil {
 		return err
 	}
 	if err := startManagementServices(cfg); err != nil {
@@ -530,7 +537,7 @@ func ensureGroup(name string) error {
 	}
 	return exec.Command("groupadd", "--system", name).Run()
 }
-func ensureUser(name, shell, home string, system, lockPassword bool) error {
+func ensureUser(name, shell, home string, system, lockPassword bool, primaryGroup string) error {
 	created := exec.Command("id", "-u", name).Run() != nil
 	if created {
 		args := []string{"--create-home", "--home-dir", home, "--shell", shell}
@@ -539,6 +546,9 @@ func ensureUser(name, shell, home string, system, lockPassword bool) error {
 		}
 		if system {
 			args = append([]string{"--system"}, args...)
+		}
+		if primaryGroup != "" {
+			args = append(args, "--gid", primaryGroup)
 		}
 		args = append(args, name)
 		if err := exec.Command("useradd", args...).Run(); err != nil {

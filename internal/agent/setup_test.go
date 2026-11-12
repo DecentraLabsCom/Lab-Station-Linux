@@ -238,7 +238,27 @@ func TestSetupEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := "/etc/decentralabs/lab-station/e2e.toml"
+	noFMUConfigPath := "/etc/decentralabs/lab-station/e2e-no-fmu.toml"
 	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB labstation-test"
+	noFMUArgs := []string{
+		"--profile=hybrid",
+		"--management-public-key=" + key,
+		"--ssh-port=2222",
+		"--config=" + noFMUConfigPath,
+		"--no-install-deps",
+	}
+	if err := Setup(noFMUArgs); err != nil {
+		t.Fatalf("Setup() failed without FMU Executor source in isolated systemd container: %v", err)
+	}
+	if _, err := user.Lookup("labstation-fmu"); err == nil {
+		t.Fatal("setup created labstation-fmu without an FMU Executor source")
+	}
+	if _, err := user.LookupGroup("labstation-fmu"); err == nil {
+		t.Fatal("setup created the labstation-fmu group without an FMU Executor source")
+	}
+	if _, err := os.Stat("/etc/systemd/system/decentralabs-labstation-fmu.service"); !os.IsNotExist(err) {
+		t.Fatalf("FMU service exists without an FMU Executor source: %v", err)
+	}
 	args := []string{
 		"--profile=hybrid",
 		"--management-public-key=" + key,
@@ -250,6 +270,17 @@ func TestSetupEndToEnd(t *testing.T) {
 	}
 	if err := Setup(args); err != nil {
 		t.Fatalf("Setup() failed in isolated systemd container: %v", err)
+	}
+	fmuAccount, err := user.Lookup("labstation-fmu")
+	if err != nil {
+		t.Fatalf("FMU source setup did not create its service account: %v", err)
+	}
+	fmuGroup, err := user.LookupGroup("labstation-fmu")
+	if err != nil {
+		t.Fatalf("FMU source setup did not create its service group: %v", err)
+	}
+	if fmuAccount.Gid != fmuGroup.Gid {
+		t.Errorf("FMU service account primary gid = %s, want labstation-fmu gid %s", fmuAccount.Gid, fmuGroup.Gid)
 	}
 
 	configData, err := os.ReadFile(configPath)

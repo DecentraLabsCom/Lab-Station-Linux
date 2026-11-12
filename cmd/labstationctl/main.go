@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -147,9 +146,8 @@ func loadApplicationProfileOwnedBy(path string, expectedUID uint32) (application
 }
 
 func launchApplication(profile applicationProfile) error {
-	if err := requireLeaseAdmission(profile.StateDir); err != nil {
-		return err
-	}
+	// Provider-managed RDP may launch Tiny Desk without a reservation lease.
+	// Dispatcher leases continue to authorize prepare-session and release-session.
 	applications := profile.Applications
 	legacyApplication := len(applications) == 0
 	if legacyApplication {
@@ -254,26 +252,6 @@ func applicationCloseTimeout(seconds int) time.Duration {
 		timeout = 15 * time.Second
 	}
 	return timeout
-}
-
-func requireLeaseAdmission(stateDir string) error {
-	request, err := json.Marshal(map[string]string{"operation": "lease-admission", "stateDir": stateDir})
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command("/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
-	cmd.Stdin = bytes.NewReader(append(request, '\n'))
-	output, err := cmd.Output()
-	if err != nil {
-		return errors.New("no active reservation permits application access")
-	}
-	var response struct {
-		Allowed bool `json:"allowed"`
-	}
-	if json.Unmarshal(output, &response) != nil || !response.Allowed {
-		return errors.New("no active reservation permits application access")
-	}
-	return nil
 }
 
 func terminateProcessGroup(pid int, grace time.Duration) {

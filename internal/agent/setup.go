@@ -132,7 +132,9 @@ func Setup(args []string) error {
 		return errors.New("unable to disable password login for the SSH management account")
 	}
 	if cfg.Profile != "fmu-only" {
-		if err := ensureUser("labuser", "/bin/sh", tinyDeskSessionHome, false, false, ""); err != nil {
+		// Keep a newly created RDP account locked until an administrator sets its password.
+		// ensureUser preserves the password state of an existing labuser account.
+		if err := ensureUser("labuser", "/bin/sh", tinyDeskSessionHome, false, true, ""); err != nil {
 			return err
 		}
 	}
@@ -217,7 +219,11 @@ func Setup(args []string) error {
 	if err := startManagementServices(cfg); err != nil {
 		return err
 	}
-	fmt.Println("Lab Station Linux setup completed. Set the labuser RDP password through your approved credential process before exposing Tiny Desk.")
+	fmt.Println("Lab Station Linux setup completed.")
+	if cfg.Profile != "fmu-only" {
+		fmt.Println("The installer does not generate or request a labuser password.")
+		fmt.Println("As root, run 'passwd labuser' to set one before exposing Tiny Desk.")
+	}
 	return nil
 }
 
@@ -586,7 +592,9 @@ func ensureUser(name, shell, home string, system, lockPassword bool, primaryGrou
 		}
 	}
 	if lockPassword && (created || name != "labuser") {
-		_ = exec.Command("passwd", "--lock", name).Run()
+		if err := exec.Command("passwd", "--lock", name).Run(); err != nil {
+			return fmt.Errorf("unable to lock password for account %s: %w", name, err)
+		}
 	}
 	return nil
 }

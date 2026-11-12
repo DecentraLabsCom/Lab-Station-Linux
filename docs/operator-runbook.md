@@ -39,9 +39,18 @@ For an approved Wake-on-LAN interface, add `--wake-interface <interface>` only
 after checking that the NIC and firmware support the required mode.
 
 Setup creates the restricted `labstation-ops` SSH account and service users. It
-does not set an RDP password. Before enabling Tiny Desk, set a unique password
-for `labuser` through the organization's approved credential process. Do not
-reuse the Gateway key or an administrator's password.
+does not generate, request, or display an RDP password for `labuser`; a newly
+created `labuser` account remains password-locked until an administrator sets
+one. Before enabling Tiny Desk, set a unique password as root:
+
+```sh
+passwd labuser
+```
+
+The password cannot be retrieved later from Linux; if it is forgotten, run
+`passwd labuser` again to replace it. Re-running setup preserves the password
+state of an existing `labuser` account. Do not reuse the Gateway key or an
+administrator's password.
 
 ## Configure Tiny Desk applications
 
@@ -95,6 +104,16 @@ unavailable until every configured executable exists and is executable. For
 one application, continue using `application.command` and `application.args`
 as before.
 
+An authorized provider may use the provider-managed RDP connection to start
+Tiny Desk outside a reservation or demo. This operator path does not require an
+active lease. End-user access still follows Gateway's authorized reservation or
+demo flow; leases continue to govern `prepare-session` and `release-session`.
+Both paths use `labuser`, so disconnect provider maintenance sessions before a
+reservation begins. `release-session` signs out `labuser` sessions at the end
+of the reservation. Keep the direct Guacamole connection and RDP network path
+restricted to trusted operators; the station does not enforce a lease at
+application launch.
+
 ## Confirm Gateway trust and readiness
 
 In Lab Manager, review the discovered SSH host fingerprint against the
@@ -142,9 +161,10 @@ sudo labstationctl recovery reboot-if-needed
 
 If Gateway reports a host-key mismatch, stop remote actions and compare the
 fingerprint through the trusted console before changing the pin. If lease state,
-session ownership, or operation outcome is uncertain, keep admission closed and
-reconcile from station status and the operation journal; do not retry the action
-under a new operation ID.
+session ownership, or operation outcome is uncertain, reconcile station status
+and the operation journal before retrying `prepare-session` or `release-session`;
+do not retry under a new operation ID. Disconnect provider maintenance sessions
+before a reservation begins.
 
 For an agent rollback from the portable bundle, run `rollback.sh` as root. It
 restores the previous agent binaries and restarts the station service. For a

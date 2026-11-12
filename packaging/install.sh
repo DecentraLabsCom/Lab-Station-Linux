@@ -24,6 +24,13 @@ test -x "$PAYLOAD/usr/bin/labstationctl" || { echo 'The portable payload is miss
 STATE=/var/lib/decentralabs/lab-station/upgrade
 mkdir -p "$STATE/previous"
 chmod 0700 "$STATE" "$STATE/previous"
+# The daemon executable cannot be replaced while it is running. Stop it before
+# saving the old binaries so upgrades do not leave a mixed or partial payload.
+if command -v systemctl >/dev/null 2>&1 && systemctl cat decentralabs-labstation.service >/dev/null 2>&1; then
+    systemctl stop decentralabs-labstation.service
+elif command -v rc-service >/dev/null 2>&1 && [ -x /etc/init.d/decentralabs-labstation ]; then
+    rc-service decentralabs-labstation stop || true
+fi
 for name in labstationctl labstationd; do
     if [ -f "/usr/bin/$name" ]; then cp -p "/usr/bin/$name" "$STATE/previous/$name"; fi
 done

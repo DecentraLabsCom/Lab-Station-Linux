@@ -90,7 +90,7 @@ func (LinuxRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
 			if user == "labuser" && values["Type"] == "x11" {
 				evictable = true
 			}
-		} else if values["Seat"] == "" {
+		} else if values["Seat"] == "" || isDisplayManagerSession(user, values["Seat"], values["Type"]) {
 			kind = "service"
 		} else {
 			evictable = true
@@ -103,6 +103,18 @@ func (LinuxRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
 		}
 	}
 	return local, remote, ok && scanner.Err() == nil
+}
+
+func isDisplayManagerSession(user, seat, sessionType string) bool {
+	if seat == "" || (sessionType != "x11" && sessionType != "wayland") {
+		return false
+	}
+	switch strings.ToLower(user) {
+	case "gdm", "gdm3", "debian-gdm", "lightdm", "sddm", "greetd":
+		return true
+	default:
+		return false
+	}
 }
 
 func (LinuxRuntime) WakeStatus(interfaces []map[string]string) (bool, bool) {

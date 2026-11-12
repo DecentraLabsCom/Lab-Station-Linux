@@ -2,10 +2,13 @@ package host
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Runtime interface {
@@ -193,12 +196,35 @@ func (LinuxRuntime) UserPasswordConfigured(username string) bool {
 	if username == "" || strings.ContainsAny(username, "\r\n\x00") {
 		return false
 	}
+	if os.Geteuid() != 0 && username == "labuser" {
+		if _, err := os.Stat("/usr/lib/decentralabs/lab-station/labstation-helper"); err == nil {
+			return labuserPasswordConfiguredByHelper()
+		}
+	}
 	out, err := exec.Command("passwd", "-S", username).Output()
 	if err != nil {
 		return false
 	}
 	fields := strings.Fields(string(out))
 	return len(fields) >= 2 && fields[1] == "P"
+}
+
+func labuserPasswordConfiguredByHelper() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
+	cmd.Stdin = strings.NewReader(`{"operation":"labuser-password-status"}` + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var status struct {
+		Configured bool `json:"configured"`
+	}
+	if err := json.Unmarshal(out, &status); err != nil {
+		return false
+	}
+	return status.Configured
 }
 
 func (LinuxRuntime) NotifyLocalUsers(message string) error {

@@ -62,6 +62,14 @@ func main() {
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"configured": configured})
 		return
 	}
+	if request.Operation == "labuser-password-status" {
+		configured, err := labuserPasswordConfigured()
+		if err != nil {
+			reject("unable to read labuser password status")
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"configured": configured})
+		return
+	}
 	if err := execute(request); err != nil {
 		reject("privileged operation rejected")
 	}
@@ -105,7 +113,7 @@ func requestOperationClass(operation string) string {
 	switch operation {
 	case "lease-admission":
 		return "admission"
-	case "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "secret-set", "secret-clear", "secret-status":
+	case "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "secret-set", "secret-clear", "secret-status", "labuser-password-status":
 		return "control"
 	default:
 		return ""
@@ -275,6 +283,18 @@ func approvedSessionIdentity(name, remote, seat, sessionType string) bool {
 
 func secretConfigured() bool {
 	return secretConfiguredAt("/etc/decentralabs/lab-station/secrets")
+}
+
+func labuserPasswordConfigured() (bool, error) {
+	out, err := exec.Command("/usr/bin/passwd", "-S", "labuser").Output()
+	if err != nil {
+		return false, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 || fields[0] != "labuser" {
+		return false, errors.New("passwd returned an invalid labuser status")
+	}
+	return fields[1] == "P", nil
 }
 
 func secretConfiguredAt(directory string) bool {

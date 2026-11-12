@@ -623,6 +623,9 @@ func writeApplicationProfile(cfg config.Config) error {
 }
 
 func installDirectoryLayout(cfg config.Config) error {
+	if err := ensureLogParentAccess(); err != nil {
+		return err
+	}
 	shared := []string{cfg.StateDir, filepath.Join(cfg.StateDir, "commands"), filepath.Join(cfg.StateDir, "commands", "inbox"), filepath.Join(cfg.StateDir, "commands", "processing"), filepath.Join(cfg.StateDir, "commands", "processed"), filepath.Join(cfg.StateDir, "commands", "results"), cfg.LogDir}
 	for _, path := range shared {
 		if err := os.MkdirAll(path, 0o770); err != nil {
@@ -688,6 +691,27 @@ func installDirectoryLayout(cfg config.Config) error {
 	}
 	if err := os.Chmod("/usr/share/decentralabs/lab-station", 0755); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureLogParentAccess() error {
+	const path = "/var/log/decentralabs"
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("unable to prepare Lab Station log parent: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Lab Station log parent must be a real directory")
+	}
+	if err := os.Chown(path, 0, lookupGroup("labstation")); err != nil {
+		return fmt.Errorf("unable to set Lab Station log parent group: %w", err)
+	}
+	if err := os.Chmod(path, 0710); err != nil {
+		return fmt.Errorf("unable to allow Lab Station log directory traversal: %w", err)
 	}
 	return nil
 }

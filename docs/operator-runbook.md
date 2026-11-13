@@ -107,12 +107,33 @@ as before.
 An authorized provider may use the provider-managed RDP connection to start
 Tiny Desk outside a reservation or demo. This operator path does not require an
 active lease. End-user access still follows Gateway's authorized reservation or
-demo flow; leases continue to govern `prepare-session` and `release-session`.
-Both paths use `labuser`, so disconnect provider maintenance sessions before a
-reservation begins. `release-session` signs out `labuser` sessions at the end
-of the reservation. Keep the direct Guacamole connection and RDP network path
-restricted to trusted operators; the station does not enforce a lease at
-application launch.
+demo flow; leases govern reservation-bound `prepare-session` and
+`release-session`. The Lab Manager operator Release action is available only
+when no lease is active and closes remote Tiny Desk sessions before cleaning
+up station state. Both paths use `labuser`, so disconnect provider maintenance
+sessions before a reservation begins. Keep the direct Guacamole connection and
+RDP network path restricted to trusted operators; the station does not enforce
+a lease at application launch.
+
+### Configure Guacamole for Linux XRDP
+
+When creating the Gateway's Guacamole RDP connection for a Linux Lab Station,
+leave **Security mode** at its default (**Any**) and enable **Ignore server
+certificate**. Leave **Trust host certificate on first use** disabled and
+**Fingerprints of trusted host certificates** blank. XRDP generates a
+self-signed certificate during installation; this setting lets Guacamole
+connect without asking the teacher or technician to copy and pin its
+fingerprint. RDP still negotiates its security and encryption, but Guacamole
+does not verify the station's server identity. Use this setting only when the
+RDP connection is restricted to a trusted private laboratory network. For
+networks where server identity must be verified, leave **Ignore server
+certificate** disabled and set the station's verified SHA-256 fingerprint in
+**Fingerprints of trusted host certificates** instead. This guidance is
+specific to Linux XRDP, not a general change for Windows RDP connections.
+
+This is a Guacamole connection setting; it is not changed by installing or
+updating Lab Station Linux. Apply it to the local RDP connection on each
+Gateway that provides access to the station.
 
 ### Diagnose a black Tiny Desk screen
 

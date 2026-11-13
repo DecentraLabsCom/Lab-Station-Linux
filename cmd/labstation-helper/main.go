@@ -30,6 +30,7 @@ type request struct {
 	SessionRemote string `json:"sessionRemote"`
 	SessionSeat   string `json:"sessionSeat"`
 	SessionType   string `json:"sessionType"`
+	ForceSession  bool   `json:"forceSession"`
 	StateDir      string `json:"stateDir"`
 }
 
@@ -179,6 +180,12 @@ func executeWithContext(ctx context.Context, request request) error {
 		values, err = readSessionIdentity(ctx, request.SessionID)
 		if err != nil || !sameSessionIdentity(values, request) {
 			return errors.New("session identity changed before termination")
+		}
+		if request.ForceSession {
+			if request.SessionUser != "labuser" || request.SessionRemote != "yes" || request.SessionType != "x11" {
+				return errors.New("forced termination is limited to remote Tiny Desk sessions")
+			}
+			return exec.CommandContext(ctx, loginctlBinary, "terminate-session", request.SessionID).Run()
 		}
 		if err := exec.CommandContext(ctx, loginctlBinary, "kill-session", "--signal=TERM", request.SessionID).Run(); err != nil {
 			return err

@@ -56,7 +56,7 @@ func Dispatch(input io.Reader, output io.Writer, a *Agent) error {
 	if request.SchemaVersion == 2 {
 		return dispatchV2(ctx, output, a, request)
 	}
-	if request.Operation == "execute" && (request.Command == "prepare-session" || request.Command == "release-session") {
+	if request.Operation == "execute" && request.Command == "prepare-session" {
 		return writeRequestError(output, request, "STATION_LEASE_REQUIRED", "session lifecycle requires dispatcher protocol 2")
 	}
 	return dispatchV1(ctx, output, a, request)
@@ -71,6 +71,9 @@ func dispatchV1(ctx context.Context, output io.Writer, a *Agent, request Request
 	case "execute":
 		if request.Context != nil || request.IssuedAt != "" || request.ExecuteBefore != "" || request.OperationID != "" {
 			return writeRequestError(output, request, "STATION_COMMAND_REJECTED", "dispatcher protocol 1 does not accept protocol 2 fields")
+		}
+		if request.Command == "release-session" {
+			return writeJSONResult(output, a.executeOperatorRelease(ctx, request))
 		}
 		return writeJSONResult(output, a.Execute(ctx, request.ID, request.Command, request.Args))
 	case "artifact.read":

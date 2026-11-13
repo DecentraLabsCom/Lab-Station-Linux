@@ -15,9 +15,11 @@ platform-specific adapters.
 
 The SSH command envelope is versioned separately from Station Contract. The
 bundle contains Gateway's dispatcher v1/v2 request schemas and the v2 response
-schema. V2 is required for `prepare-session` and
+schema. V2 is required for lease-bound `prepare-session` and
 `release-session`; the request carries a durable lease identity and bounded
-UTC execution window. `operation.status` reports `not-found`, `processing`,
+UTC execution window. Dispatcher v1 `release-session` is reserved for trusted
+operator cleanup when no lease is active, and it is serialized against lease
+changes. `operation.status` reports `not-found`, `processing`,
 `completed`, or `recovery-required`. An interrupted operation is never replayed
 automatically; its lease remains closed until an operator reconciles it.
 

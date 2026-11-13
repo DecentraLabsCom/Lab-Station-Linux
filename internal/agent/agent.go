@@ -500,7 +500,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 				if a.localModeEnabled() {
 					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE"}
 				}
-				if err := a.helper(ctx, helperSessionRequest(session)); err != nil {
+				if err := a.helper(ctx, helperSessionRequest(session, false)); err != nil {
 					return 2, "", "unable to release instructor session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
 			}
@@ -558,7 +558,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	terminated := 0
 	for _, session := range remote {
 		if session["user"] == "labuser" && session["type"] == "x11" {
-			if err := a.helper(ctx, helperSessionRequest(session)); err != nil {
+			if err := a.helper(ctx, helperSessionRequest(session, true)); err != nil {
 				return 2, "", "unable to close Tiny Desk session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 			}
 			terminated++
@@ -595,7 +595,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	return 0, "station released", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": rebootRequested, "rebootTimeoutSeconds": rebootTimeout}
 }
 
-func helperSessionRequest(session map[string]any) map[string]any {
+func helperSessionRequest(session map[string]any, force bool) map[string]any {
 	remote := "no"
 	switch value := session["remote"].(type) {
 	case bool:
@@ -612,6 +612,7 @@ func helperSessionRequest(session map[string]any) map[string]any {
 		"sessionRemote": remote,
 		"sessionSeat":   fmt.Sprint(session["seat"]),
 		"sessionType":   fmt.Sprint(session["type"]),
+		"forceSession":  force,
 	}
 }
 

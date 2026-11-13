@@ -24,7 +24,7 @@ func TestDefaultsAreSafeAndPortable(t *testing.T) {
 	if cfg.StateDir != "/var/lib/decentralabs/lab-station/data" || cfg.ConfigDir != "/etc/decentralabs/lab-station" {
 		t.Fatalf("unexpected FHS paths: %#v", cfg)
 	}
-	if cfg.GuardGraceSeconds != 30 || cfg.Application.CloseTimeoutSeconds != 15 {
+	if cfg.GuardGraceSeconds != 90 || cfg.Application.CloseTimeoutSeconds != 15 {
 		t.Fatalf("unexpected session defaults: %#v", cfg)
 	}
 }

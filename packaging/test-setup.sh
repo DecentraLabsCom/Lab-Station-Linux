@@ -17,9 +17,13 @@ trap 'rm -rf "$FAKE_BIN"' EXIT HUP INT TERM
 # The OpenRC adapter test runs on systemd-based images too, so create the
 # service-script directory that an OpenRC host provides.
 mkdir -p /run/systemd/system /etc/ssh /etc/xrdp /etc/init.d
+if ! command -v xauth >/dev/null 2>&1; then
+    printf '#!/bin/sh\nexit 0\n' > /usr/bin/xauth
+    chmod 0755 /usr/bin/xauth
+fi
 printf 'Include /etc/ssh/sshd_config.d/*.conf\n' > /etc/ssh/sshd_config
 printf '[Globals]\nallow_channels=true\nallow_multimon=true\n' > /etc/xrdp/xrdp.ini
-printf '[Globals]\nXAuthorityInSystemDir=no\n' > /etc/xrdp/sesman.ini
+printf '[Globals]\nEnableUserWindowManager=true\n\n[Security]\nXAuthorityInSystemDir=no\n\n[Xorg]\nparam=Xorg\nparam=-config\nparam=xrdp/xorg.conf\nparam=-noreset\nparam=-nolisten\nparam=tcp\nparam=-logfile\nparam=.xorgxrdp.%%s.log\n' > /etc/xrdp/sesman.ini
 
 cat > "$FAKE_BIN/systemctl" <<'EOF'
 #!/bin/sh
@@ -30,16 +34,21 @@ EOF
 cat > "$FAKE_BIN/sshd" <<'EOF'
 #!/bin/sh
 case "$1" in
-  -t) [ "${LABSTATION_TEST_SSHD_FAIL:-0}" != 1 ] ;;
+  -t)
+    if [ "${LABSTATION_TEST_SSHD_FAIL:-0}" = 1 ]; then
+      echo 'sshd: Bad configuration option: SyntheticDirective' >&2
+      exit 1
+    fi
+    ;;
   -T)
-    cat <<'SETTINGS'
+    cat <<SETTINGS
 port 22
 port 2222
 authenticationmethods publickey
 passwordauthentication no
 kbdinteractiveauthentication no
 permituserrc no
-permituserenvironment no
+permituserenvironment ${LABSTATION_TEST_SSHD_PERMIT_USER_ENVIRONMENT:-no}
 forcecommand /usr/lib/decentralabs/lab-station/labstation-dispatcher
 allowtcpforwarding no
 allowagentforwarding no
@@ -73,10 +82,12 @@ cat > "$FAKE_BIN/useradd" <<'EOF'
 home=/var/lib/empty
 shell=/usr/sbin/nologin
 name=
+primary_group=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --home-dir) shift; home=$1 ;;
     --shell) shift; shell=$1 ;;
+    --gid) shift; primary_group=$1 ;;
     --*) ;;
     *) name=$1 ;;
   esac
@@ -84,8 +95,17 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$name" ] || exit 2
 uid=$(awk -F: 'BEGIN { max=3000 } $3 >= max { max=$3+1 } END { print max }' /etc/passwd)
-getent group "$name" >/dev/null 2>&1 || groupadd --system "$name"
-gid=$(awk -F: -v name="$name" '$1 == name { print $3; exit }' /etc/group)
+if [ -n "$primary_group" ]; then
+  getent group "$primary_group" >/dev/null 2>&1 || exit 6
+  gid=$(awk -F: -v name="$primary_group" '$1 == name { print $3; exit }' /etc/group)
+else
+  if getent group "$name" >/dev/null 2>&1; then
+    echo "useradd: group '$name' already exists" >&2
+    exit 9
+  fi
+  groupadd --system "$name"
+  gid=$(awk -F: -v name="$name" '$1 == name { print $3; exit }' /etc/group)
+fi
 printf '%s:x:%s:%s::%s:%s\n' "$name" "$uid" "$gid" "$home" "$shell" >> /etc/passwd
 mkdir -p "$home"
 EOF
@@ -93,8 +113,17 @@ EOF
 cat > "$FAKE_BIN/usermod" <<'EOF'
 #!/bin/sh
 if [ "$1" = "--home-dir" ]; then
+  echo "usermod: unrecognized option '--home-dir'" >&2
+  exit 2
+fi
+if [ "$1" = "--home" ]; then
   home=$2
   account=$3
+  if [ "${LABSTATION_TEST_USERMOD_FAIL:-0}" = 1 ]; then
+    echo 'usermod: Synthetic home update failure' >&2
+    exit 1
+  fi
+  printf '%s\n' "$*" >> /tmp/labstation-test-usermod.log
   awk -F: -v account="$account" -v home="$home" 'BEGIN { OFS=":" } $1 == account { $6=home } { print }' /etc/passwd > /etc/passwd.labstation-new
   mv /etc/passwd.labstation-new /etc/passwd
   exit 0
@@ -154,6 +183,7 @@ chmod 0755 "$FAKE_BIN"/*
 export PATH="$FAKE_BIN:$PATH"
 rm -f /tmp/labstation-test-systemctl.log
 rm -f /tmp/labstation-test-openrc.log
+rm -f /tmp/labstation-test-usermod.log
 printf 'd\n' > /tmp/labstation-test-wol-mode
 
 export LABSTATION_SETUP_E2E=1
@@ -185,8 +215,12 @@ grep -q 'sudo -n --preserve-env=LABSTATION_CONFIG --user=labstationd' /usr/lib/d
 test "$(stat -c '%a' /etc/sudoers.d/decentralabs-lab-station)" = 440
 grep -q '^labstationd ALL=(root) NOPASSWD:' /etc/sudoers.d/decentralabs-lab-station
 grep -q '^labuser ALL=(root) NOPASSWD:' /etc/sudoers.d/decentralabs-lab-station
-! id -nG labstation-ops | tr ' ' '\n' | grep -qx labstation
-! id -nG labstation-fmu | tr ' ' '\n' | grep -qx labstation
+for account in labstation-ops labstation-fmu; do
+    if id -nG "$account" | tr ' ' '\n' | grep -qx labstation; then
+        echo "$account must not belong to the labstation group" >&2
+        exit 1
+    fi
+done
 id -nG labstation-fmu | tr ' ' '\n' | grep -qx labstation-fmu
 test -d /var/lib/decentralabs/lab-station/data/commands/inbox
 test "$(stat -c '%a' /var/lib/decentralabs/lab-station/data)" = 2770
@@ -194,6 +228,7 @@ test -f /var/lib/decentralabs/lab-station/tiny-desk-session/.xsession
 test "$(stat -c '%u:%g:%a' /var/lib/decentralabs/lab-station/tiny-desk-session)" = '0:0:755'
 test "$(stat -c '%u:%g:%a' /var/lib/decentralabs/lab-station/tiny-desk-session/.xsession)" = '0:0:755'
 test "$(readlink /var/lib/decentralabs/lab-station/tiny-desk-session/.xsession-errors)" = '/var/lib/decentralabs/lab-station/tiny-desk-home/.xsession-errors'
+test "$(readlink /var/lib/decentralabs/lab-station/tiny-desk-session/.Xauthority)" = '/var/lib/decentralabs/lab-station/tiny-desk-home/.Xauthority'
 LABUSER_UID=$(awk -F: '$1 == "labuser" { print $3 }' /etc/passwd)
 test "$(stat -c '%u:%a' /var/lib/decentralabs/lab-station/tiny-desk-home)" = "$LABUSER_UID:700"
 test "$(awk -F: '$1 == "labuser" { print $6 }' /etc/passwd)" = '/var/lib/decentralabs/lab-station/tiny-desk-session'
@@ -202,7 +237,10 @@ test "$(stat -c '%a' /usr/share/decentralabs/lab-station/tiny-desk-rc.xml)" = 64
 grep -q '^allow_channels=false$' /etc/xrdp/xrdp.ini
 grep -q '^allow_multimon=false$' /etc/xrdp/xrdp.ini
 test -f /etc/xrdp/xrdp.ini.decentralabs-lab-station.bak
-grep -q '^XAuthorityInSystemDir=yes$' /etc/xrdp/sesman.ini
+grep -q '^param=/usr/lib/decentralabs/lab-station/xrdp-xorg$' /etc/xrdp/sesman.ini
+grep -q '^PATH=/usr/lib/decentralabs/lab-station/xrdp-auth-bin:' /etc/xrdp/sesman.ini
+test -x /usr/lib/decentralabs/lab-station/xrdp-auth-bin/xauth
+test -x /usr/lib/decentralabs/lab-station/xrdp-xorg
 test -f /etc/xrdp/sesman.ini.decentralabs-lab-station.bak
 test -f /opt/decentralabs/fmu-executor/app/main.py
 test -f /etc/systemd/system/decentralabs-labstation-fmu.service

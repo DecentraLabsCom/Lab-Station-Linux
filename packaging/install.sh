@@ -24,13 +24,35 @@ test -x "$PAYLOAD/usr/bin/labstationctl" || { echo 'The portable payload is miss
 STATE=/var/lib/decentralabs/lab-station/upgrade
 mkdir -p "$STATE/previous"
 chmod 0700 "$STATE" "$STATE/previous"
+# The daemon executable cannot be replaced while it is running. Stop it before
+# saving the old binaries so upgrades do not leave a mixed or partial payload.
+if command -v systemctl >/dev/null 2>&1 && systemctl cat decentralabs-labstation.service >/dev/null 2>&1; then
+    systemctl stop decentralabs-labstation.service
+elif command -v rc-service >/dev/null 2>&1 && [ -x /etc/init.d/decentralabs-labstation ]; then
+    rc-service decentralabs-labstation stop || true
+fi
 for name in labstationctl labstationd; do
     if [ -f "/usr/bin/$name" ]; then cp -p "/usr/bin/$name" "$STATE/previous/$name"; fi
 done
 for name in labstation-dispatcher-bin labstation-helper-bin; do
     if [ -f "/usr/lib/decentralabs/lab-station/$name" ]; then cp -p "/usr/lib/decentralabs/lab-station/$name" "$STATE/previous/$name"; fi
 done
-cp -a "$PAYLOAD/." /
+# Bundles can be built and extracted by an unprivileged account. Never copy
+# their directory metadata over existing system paths or trust their owner.
+umask 022
+set --
+for directory in etc usr var; do
+    if [ -d "$PAYLOAD/$directory" ]; then set -- "$@" "$directory"; fi
+done
+PAYLOAD_ARCHIVE=$(mktemp "$STATE/payload.XXXXXX")
+trap 'rm -f "$PAYLOAD_ARCHIVE"' EXIT HUP INT TERM
+tar -C "$PAYLOAD" -cf "$PAYLOAD_ARCHIVE" "$@"
+tar -C / --no-overwrite-dir --no-same-owner --no-same-permissions -xf "$PAYLOAD_ARCHIVE"
+rm -f "$PAYLOAD_ARCHIVE"
+trap - EXIT HUP INT TERM
+chown root:root /usr/bin/labstationctl /usr/bin/labstationd \
+    /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin \
+    /usr/lib/decentralabs/lab-station/labstation-helper-bin
 chmod 0755 /usr/bin/labstationctl /usr/bin/labstationd
 chmod 0755 /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin /usr/lib/decentralabs/lab-station/labstation-helper-bin
 FMU_SOURCE=/usr/share/decentralabs/lab-station/fmu-executor-source

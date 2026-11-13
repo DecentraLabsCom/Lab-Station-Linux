@@ -14,6 +14,8 @@ FMU_EXECUTOR_COMMIT_JSON=null
 FMU_EXECUTOR_SHA256_JSON=null
 FMU_EXECUTOR_RUNTIME_SHA256_JSON=null
 FMU_TEMP_DIR=
+FMU_WAREHOUSE_STAGE_DIR=
+FMU_REFERENCE_FMU_STAGE_DIR=
 trap 'if [ -n "$FMU_TEMP_DIR" ]; then rm -rf "$FMU_TEMP_DIR"; fi' EXIT HUP INT TERM
 if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
     FMU_EXECUTOR_SOURCE_ROOT=$(CDPATH= cd -- "$FMU_EXECUTOR_SOURCE" && pwd)
@@ -23,6 +25,11 @@ if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
     }
     if [ "$SOURCE_COMMIT" != "$PINNED_FMU_EXECUTOR_COMMIT" ]; then
         echo "FMU Executor commit $SOURCE_COMMIT does not match the pinned commit $PINNED_FMU_EXECUTOR_COMMIT" >&2
+        exit 1
+    fi
+    SOURCE_CHANGES=$(git -C "$FMU_EXECUTOR_SOURCE_ROOT" status --porcelain --untracked-files=all)
+    if [ -n "$SOURCE_CHANGES" ]; then
+        echo 'FMU Executor source checkout must be clean before packaging.' >&2
         exit 1
     fi
     FMU_TEMP_DIR=$(mktemp -d)
@@ -39,6 +46,12 @@ if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
         --prefix="decentralabs-fmu-executor-$PINNED_FMU_EXECUTOR_VERSION/" \
         "$PINNED_FMU_EXECUTOR_COMMIT" VERSION pyproject.toml requirements.txt \
         README.md app tests | tar -xf - -C "$FMU_EXECUTOR_SOURCE_DIR" --strip-components=1
+    git -C "$FMU_EXECUTOR_SOURCE_ROOT" -c core.autocrlf=false archive --format=tar \
+        "$PINNED_FMU_EXECUTOR_COMMIT" examples/smart-warehouse-cell |
+        tar -xf - -C "$FMU_TEMP_DIR"
+    git -C "$FMU_EXECUTOR_SOURCE_ROOT" -c core.autocrlf=false archive --format=tar \
+        "$PINNED_FMU_EXECUTOR_COMMIT" examples/reference-fmus |
+        tar -xf - -C "$FMU_TEMP_DIR"
     test -d "$FMU_EXECUTOR_SOURCE_DIR/app" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/app"
     test -f "$FMU_EXECUTOR_SOURCE_DIR/app/main.py" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/app/main.py"
     test -f "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt" && test ! -L "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt"
@@ -66,6 +79,18 @@ if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
         echo "FMU Executor runtime payload digest $SOURCE_RUNTIME_SHA256 does not match the pinned digest $PINNED_FMU_EXECUTOR_RUNTIME_SHA256" >&2
         exit 1
     fi
+    FMU_WAREHOUSE_STAGE_DIR="$FMU_TEMP_DIR/smart-warehouse-demo"
+    python3 "$ROOT/packaging/stage_smart_warehouse_demo.py" \
+        --example-root "$FMU_TEMP_DIR/examples/smart-warehouse-cell" \
+        --lock-file "$ROOT/internal/agent/smart_warehouse_demo_assets.lock.json" \
+        --output-dir "$FMU_WAREHOUSE_STAGE_DIR"
+    FMU_REFERENCE_FMU_STAGE_DIR="$FMU_TEMP_DIR/reference-fmu-demos"
+    for reference_arch in amd64 arm64; do
+        python3 "$ROOT/packaging/stage_reference_fmus.py" \
+            --source-dir "$FMU_TEMP_DIR/examples/reference-fmus" \
+            --architecture "$reference_arch" \
+            --output-dir "$FMU_REFERENCE_FMU_STAGE_DIR/$reference_arch"
+    done
     FMU_EXECUTOR_VERSION_JSON="\"$FMU_EXECUTOR_VERSION\""
     FMU_EXECUTOR_COMMIT_JSON="\"$SOURCE_COMMIT\""
     FMU_EXECUTOR_SHA256_JSON="\"$SOURCE_SHA256\""
@@ -100,12 +125,31 @@ for GOARCH_VALUE in amd64 arm64; do
     done
     install -m 0644 "$ROOT/config/station.toml" "$PAYLOAD/etc/decentralabs/lab-station/station.toml.example"
     install -m 0644 "$ROOT/README.md" "$PAYLOAD/usr/share/doc/lab-station-linux/README.md"
+    SMART_WAREHOUSE_DEMO_JSON=false
     if [ -n "${FMU_EXECUTOR_SOURCE:-}" ]; then
         mkdir -p "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source"
         cp -R "$FMU_EXECUTOR_SOURCE_DIR/app" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/"
         install -m 0644 "$FMU_EXECUTOR_SOURCE_DIR/requirements.txt" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/requirements.txt"
         install -m 0644 "$FMU_EXECUTOR_SOURCE_DIR/VERSION" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/VERSION"
         install -m 0644 "$FMU_EXECUTOR_SOURCE_DIR/SOURCE.lock.json" "$PAYLOAD/usr/share/decentralabs/lab-station/fmu-executor-source/SOURCE.lock.json"
+    fi
+    if [ "$GOARCH_VALUE" = amd64 ] && [ -n "$FMU_WAREHOUSE_STAGE_DIR" ]; then
+        demo_data="$PAYLOAD/var/lib/decentralabs/fmu-executor/fmu-data"
+        mkdir -p "$demo_data"
+        install -m 0644 "$FMU_WAREHOUSE_STAGE_DIR/SmartWarehouseCell.fmu" "$demo_data/SmartWarehouseCell.fmu"
+        install -m 0644 "$FMU_WAREHOUSE_STAGE_DIR/SmartWarehouseCell.glb" "$demo_data/SmartWarehouseCell.glb"
+        install -m 0644 "$FMU_WAREHOUSE_STAGE_DIR/SmartWarehouseCell.webapp.zip" "$demo_data/SmartWarehouseCell.webapp.zip"
+        install -m 0644 "$FMU_WAREHOUSE_STAGE_DIR/SmartWarehouseCell.LICENSE.txt" "$demo_data/SmartWarehouseCell.LICENSE.txt"
+        SMART_WAREHOUSE_DEMO_JSON=true
+    fi
+    if [ -n "$FMU_REFERENCE_FMU_STAGE_DIR" ]; then
+        demo_data="$PAYLOAD/var/lib/decentralabs/fmu-executor/fmu-data"
+        mkdir -p "$demo_data"
+        for reference_fmu in "$FMU_REFERENCE_FMU_STAGE_DIR/$GOARCH_VALUE"/*.fmu; do
+            install -m 0644 "$reference_fmu" "$demo_data/$(basename "$reference_fmu")"
+        done
+        install -m 0644 "$FMU_REFERENCE_FMU_STAGE_DIR/$GOARCH_VALUE/Reference-FMUs.LICENSE.txt" \
+            "$demo_data/Reference-FMUs.LICENSE.txt"
     fi
     ARCHIVE="$OUTPUT_DIR/lab-station-linux-$VERSION-linux-$GOARCH_VALUE.tar.gz"
     BUNDLE_ROOT=$(mktemp -d)
@@ -126,7 +170,7 @@ for GOARCH_VALUE in amd64 arm64; do
     fi
     signed=false
     if [ -n "${MINISIGN_SECRET_KEY:-}" ]; then signed=true; fi
-    printf '{"version":"%s","os":"linux","arch":"%s","contractVersion":"3.0.0","fmuExecutorVersion":%s,"fmuExecutorCommit":%s,"fmuExecutorSha256":%s,"fmuExecutorRuntimeSha256":%s,"runtimeDownloads":false,"signed":%s}\n' \
-        "$VERSION" "$GOARCH_VALUE" "$FMU_EXECUTOR_VERSION_JSON" "$FMU_EXECUTOR_COMMIT_JSON" "$FMU_EXECUTOR_SHA256_JSON" "$FMU_EXECUTOR_RUNTIME_SHA256_JSON" "$signed" \
+    printf '{"version":"%s","os":"linux","arch":"%s","contractVersion":"3.0.0","fmuExecutorVersion":%s,"fmuExecutorCommit":%s,"fmuExecutorSha256":%s,"fmuExecutorRuntimeSha256":%s,"smartWarehouseDemo":%s,"runtimeDownloads":false,"signed":%s}\n' \
+        "$VERSION" "$GOARCH_VALUE" "$FMU_EXECUTOR_VERSION_JSON" "$FMU_EXECUTOR_COMMIT_JSON" "$FMU_EXECUTOR_SHA256_JSON" "$FMU_EXECUTOR_RUNTIME_SHA256_JSON" "$SMART_WAREHOUSE_DEMO_JSON" "$signed" \
         > "$OUTPUT_DIR/lab-station-linux-$VERSION-linux-$GOARCH_VALUE.manifest.json"
 done

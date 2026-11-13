@@ -2,10 +2,13 @@ package host
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Runtime interface {
@@ -87,7 +90,7 @@ func (LinuxRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
 			if user == "labuser" && values["Type"] == "x11" {
 				evictable = true
 			}
-		} else if values["Seat"] == "" {
+		} else if values["Seat"] == "" || isDisplayManagerSession(user, values["Seat"], values["Type"]) {
 			kind = "service"
 		} else {
 			evictable = true
@@ -100,6 +103,18 @@ func (LinuxRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
 		}
 	}
 	return local, remote, ok && scanner.Err() == nil
+}
+
+func isDisplayManagerSession(user, seat, sessionType string) bool {
+	if seat == "" || (sessionType != "x11" && sessionType != "wayland") {
+		return false
+	}
+	switch strings.ToLower(user) {
+	case "gdm", "gdm3", "debian-gdm", "lightdm", "sddm", "greetd":
+		return true
+	default:
+		return false
+	}
 }
 
 func (LinuxRuntime) WakeStatus(interfaces []map[string]string) (bool, bool) {
@@ -193,12 +208,35 @@ func (LinuxRuntime) UserPasswordConfigured(username string) bool {
 	if username == "" || strings.ContainsAny(username, "\r\n\x00") {
 		return false
 	}
+	if os.Geteuid() != 0 && username == "labuser" {
+		if _, err := os.Stat("/usr/lib/decentralabs/lab-station/labstation-helper"); err == nil {
+			return labuserPasswordConfiguredByHelper()
+		}
+	}
 	out, err := exec.Command("passwd", "-S", username).Output()
 	if err != nil {
 		return false
 	}
 	fields := strings.Fields(string(out))
 	return len(fields) >= 2 && fields[1] == "P"
+}
+
+func labuserPasswordConfiguredByHelper() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
+	cmd.Stdin = strings.NewReader(`{"operation":"labuser-password-status"}` + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var status struct {
+		Configured bool `json:"configured"`
+	}
+	if err := json.Unmarshal(out, &status); err != nil {
+		return false
+	}
+	return status.Configured
 }
 
 func (LinuxRuntime) NotifyLocalUsers(message string) error {

@@ -21,8 +21,34 @@ digests. Setup verifies the source lock and every runtime file before
 installation. This is a build-time input; a station never downloads executable
 source during setup. When omitted, FMU remains an optional capability and can
 be installed separately.
-Update the Linux pin and the Windows station's `fmu-executor/SOURCE.lock.json`
-together only after reviewing the shared FMU Executor release.
+Update the Linux pin and the Windows station's
+`fmu-executor/SOURCE.lock.json` together only after reviewing the shared FMU
+Executor release.
+
+The pinned runtime understands FMI-LS-REF companion declarations. It prefers
+the declared webapp ZIP (or a same-stem `.webapp.zip`), then the declared GLB,
+then a same-stem `.glb`. Keep the Linux and Windows pins on the same reviewed
+Executor commit so Gateway receives consistent companion discovery
+from either Station platform.
+
+The pinned checkout provides `examples/smart-warehouse-cell`. The packager
+verifies its Linux x64 FMU and standalone GLB against the asset lock, then
+checks that the GLB embedded in the FMU and included in the app ZIP matches the
+standalone file. The amd64 bundle installs the FMU and companions in
+`/var/lib/decentralabs/fmu-executor/fmu-data`; Lab Manager can import either
+visual asset through the authenticated
+`GET /internal/fmu/companion-asset?assetType=...` endpoint. The arm64 bundle
+deliberately omits this x86_64-only demo model; providers can still provision
+their own arm64-compatible FMUs there.
+
+The same pinned checkout provides six reference FMUs in
+`examples/reference-fmus`. Linux amd64 releases include all six archives and
+their BSD license. Linux arm64 releases include the three FMI 3 archives that
+contain native aarch64 binaries (`Stair`, `StateSpace`, and `VanDerPol`). The
+packager validates each archive's binary for the target architecture before
+staging it in `/var/lib/decentralabs/fmu-executor/fmu-data`; the remaining
+reference models are available in the FMU-Executor repository for x86_64
+Stations.
 
 ## Preparing a GitHub release
 

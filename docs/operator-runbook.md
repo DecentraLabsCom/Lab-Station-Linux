@@ -39,9 +39,139 @@ For an approved Wake-on-LAN interface, add `--wake-interface <interface>` only
 after checking that the NIC and firmware support the required mode.
 
 Setup creates the restricted `labstation-ops` SSH account and service users. It
-does not set an RDP password. Before enabling Tiny Desk, set a unique password
-for `labuser` through the organization's approved credential process. Do not
-reuse the Gateway key or an administrator's password.
+does not generate, request, or display an RDP password for `labuser`; a newly
+created `labuser` account remains password-locked until an administrator sets
+one. Before enabling Tiny Desk, set a unique password as root:
+
+```sh
+passwd labuser
+```
+
+The password cannot be retrieved later from Linux; if it is forgotten, run
+`passwd labuser` again to replace it. Re-running setup preserves the password
+state of an existing `labuser` account. Do not reuse the Gateway key or an
+administrator's password.
+
+## Configure Tiny Desk applications
+
+Tiny Desk supports the existing single-application settings and a curated list
+of up to eight applications. Every command must be an executable installed
+under `/opt/lab/apps`; do not point it at a shell. With multiple entries, all
+configured applications start together when the Tiny Desk session begins.
+Openbox provides `Alt+Tab` and `Alt+Shift+Tab` window switching and `Alt+F4`
+window closing. The list is selected by the station administrator in the
+root-managed configuration; it is not a general-purpose application menu.
+
+For a multi-application session, edit
+`/etc/decentralabs/lab-station/station.toml`. Clear the legacy `command` and
+`args` values in `[application]`, then add one `[[application.apps]]` table per
+approved application. For example:
+
+```toml
+[application]
+id = "lab-app"
+command = ""
+args = []
+user = "labuser"
+close_timeout_seconds = 15
+
+[[application.apps]]
+id = "instrument-panel"
+command = "/opt/lab/apps/instrument-panel"
+args = []
+
+[[application.apps]]
+id = "reference-viewer"
+command = "/opt/lab/apps/reference-viewer"
+args = ["--kiosk"]
+```
+
+The example paths are placeholders: install the approved programs there first.
+Keep `id` values unique. After editing, validate and apply the profile as root:
+
+```sh
+sudo labstationctl config-check
+sudo labstationctl app apply
+sudo labstationctl status-json
+```
+
+`app apply` updates the protected launcher profile and Tiny Desk window
+bindings, then restarts the station daemon so readiness reflects the new
+configuration. It does not rerun host setup or change SSH and XRDP
+configuration. The new application set takes effect the next time the
+`labuser` Tiny Desk session starts. `status-json` reports the application
+unavailable until every configured executable exists and is executable. For
+one application, continue using `application.command` and `application.args`
+as before.
+
+Executable availability is a configuration check, not a test launch. In
+particular, Chromium installed as a Snap has failed when its launcher tried to
+create data in the protected, root-owned `labuser` home. Prefer a compatible
+non-Snap browser for this setup and verify it in an actual RDP session.
+
+An authorized provider may use the provider-managed RDP connection to start
+Tiny Desk outside a reservation or demo. This operator path does not require an
+active lease. End-user access still follows Gateway's authorized reservation or
+demo flow; leases govern reservation-bound `prepare-session` and
+`release-session`. The Lab Manager operator Release action is available only
+when no lease is active and closes remote Tiny Desk sessions before cleaning
+up station state. Both paths use `labuser`, so disconnect provider maintenance
+sessions before a reservation begins. Keep the direct Guacamole connection and
+RDP network path restricted to trusted operators; the station does not enforce
+a lease at application launch.
+
+### Configure Guacamole for Linux XRDP
+
+When creating the Gateway's Guacamole RDP connection for a Linux Lab Station,
+leave **Security mode** at its default (**Any**) and enable **Ignore server
+certificate**. Leave **Trust host certificate on first use** disabled and
+**Fingerprints of trusted host certificates** blank. XRDP generates a
+self-signed certificate during installation; this setting lets Guacamole
+connect without asking the teacher or technician to copy and pin its
+fingerprint. RDP still negotiates its security and encryption, but Guacamole
+does not verify the station's server identity. Use this setting only when the
+RDP connection is restricted to a trusted private laboratory network. For
+networks where server identity must be verified, leave **Ignore server
+certificate** disabled and set the station's verified SHA-256 fingerprint in
+**Fingerprints of trusted host certificates** instead. This guidance is
+specific to Linux XRDP, not a general change for Windows RDP connections.
+
+This is a Guacamole connection setting; it is not changed by installing or
+updating Lab Station Linux. Apply it to the local RDP connection on each
+Gateway that provides access to the station.
+
+### Diagnose a black Tiny Desk screen
+
+XRDP starts Xorg before it runs the Tiny Desk `.xsession` launcher. If the
+session manager reports that Xorg timed out or exited, Chromium and the
+application launcher have not started yet; an empty `.xsession-errors` file is
+expected in that case. Inspect the Xorg log and session-manager journal first:
+
+```sh
+sudo find /var/lib/decentralabs/lab-station/tiny-desk-home -maxdepth 1 -type f -name '.xorgxrdp.*.log' -print
+sudo tail -n 100 /var/log/xrdp-sesman.log
+sudo tail -n 100 /var/lib/decentralabs/lab-station/tiny-desk-home/.xsession-errors
+```
+
+On Ubuntu, Xsession may instead direct errors to a temporary file. When
+`/tmp/xsession-labuser` exists, read it as its owner:
+
+```sh
+sudo -u labuser tail -n 100 /tmp/xsession-labuser
+```
+
+The actual `labuser` session home is root-owned and read-only. Lab Station
+installs root-owned XRDP startup shims to put that account's Xauthority file
+and Xorg log in its private writable workspace. The XRDP session PATH is
+prefixed with the managed `xauth` shim, and the configured Xorg executable is
+wrapped; both shims pass through the original commands for other account UIDs.
+The original Xorg arguments and session PATH remain in the XRDP configuration.
+
+Upstream XRDP 0.9.17 ignores `XAuthorityInSystemDir`, so the presence of that
+option does not establish that its Xauthority file is writable. Similarly, a
+`status-json` readiness result checks the managed configuration; it does not
+prove that a Guacamole RDP desktop has completed an Xorg startup. Verify a real
+connection after installation, including any other XRDP accounts in use.
 
 ## Confirm Gateway trust and readiness
 
@@ -80,6 +210,31 @@ sudo labstationctl local-mode set --ttl=28800
 sudo labstationctl local-mode clear
 ```
 
+A valid expiry or recognized legacy timestamp ends the flag. A malformed or
+marker-only flag remains active until `clear`; file modification time is not
+used to infer when local use began.
+
+Enable local mode only on a `hybrid` station, with a successful session
+inventory and no active reservation or remote lab-user session; it marks
+exclusive instructor use and expires after eight hours by default. `clear`
+remains available on any profile to remove a stale flag. `Prepare` and `Release` are supported only for
+`dedicated` and `hybrid` physical stations. Prepare rejects local mode and an
+unexpected local console session on a dedicated station. On hybrid, the default
+policy warns and evicts an eligible local session after the 90-second Gateway
+grace period (minimum 30 seconds). Set
+`station.allow_local_session_eviction = false` to make Prepare fail safely
+without terminating an instructor session; Windows uses the equivalent
+`AllowLocalSessionEviction=false` entry in `labstation/data/station-profile.ini`.
+`--no-guard` skips notification and grace but still evicts immediately when the
+policy allows it. Release closes only the managed remote `labuser` session and
+is rejected while a reservation or demo lease is active.
+
+Before each physical reservation, Prepare clears Tiny Desk `tmp`, cache,
+Downloads, `Documents/LabStationScratch`, the XDG trash and recent-file list.
+It restarts an installed FMU Executor to close its sessions and clears its
+temporary work directory. It preserves desktop/application configuration and
+FMU models. A cleanup problem is reported as an operational warning.
+
 Before changing energy or reboot state, inspect the report and make sure no
 active user or FMU work would be interrupted:
 
@@ -88,11 +243,19 @@ sudo labstationctl energy audit
 sudo labstationctl recovery reboot-if-needed
 ```
 
+Gateway shutdown requests use `power shutdown --delay=60 --require-idle`. Windows
+and Linux Stations follow the same guard: the Gateway checks the advertised
+capability, local mode, and session inventory before dispatch; the Station
+checks local mode and sessions before and after the countdown. It cancels
+shutdown if local mode is enabled, the inventory is unavailable, or a user
+session is active at either check.
+
 If Gateway reports a host-key mismatch, stop remote actions and compare the
 fingerprint through the trusted console before changing the pin. If lease state,
-session ownership, or operation outcome is uncertain, keep admission closed and
-reconcile from station status and the operation journal; do not retry the action
-under a new operation ID.
+session ownership, or operation outcome is uncertain, reconcile station status
+and the operation journal before retrying `prepare-session` or `release-session`;
+do not retry under a new operation ID. Disconnect provider maintenance sessions
+before a reservation begins.
 
 For an agent rollback from the portable bundle, run `rollback.sh` as root. It
 restores the previous agent binaries and restarts the station service. For a

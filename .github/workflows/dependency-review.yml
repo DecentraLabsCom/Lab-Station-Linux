@@ -2,6 +2,23 @@ name: Dependency review
 
 on:
   pull_request:
+    paths:
+      - "**/go.mod"
+      - "**/go.sum"
+      - "**/requirements*.txt"
+      - "**/pyproject.toml"
+      - "**/Pipfile.lock"
+      - "**/poetry.lock"
+      - "**/package-lock.json"
+      - "**/pnpm-lock.yaml"
+      - "**/yarn.lock"
+      - "**/Cargo.lock"
+      - "**/composer.lock"
+      - "**/Gemfile.lock"
+      - "**/pom.xml"
+      - "**/build.gradle"
+      - "**/build.gradle.kts"
+      - "**/gradle.lockfile"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

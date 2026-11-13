@@ -105,21 +105,24 @@ func Setup(args []string) error {
 			return err
 		}
 	}
+	withFMU := *fmuSource != ""
 	if !*noInstall {
-		if err := installDependencies(cfg.Profile, *fmuSource != ""); err != nil {
+		if err := installDependencies(cfg.Profile, withFMU); err != nil {
 			return err
 		}
 	}
 	if err := ensureGroup("labstation"); err != nil {
 		return err
 	}
-	if err := ensureGroup("labstation-fmu"); err != nil {
+	if withFMU {
+		if err := ensureGroup("labstation-fmu"); err != nil {
+			return err
+		}
+	}
+	if err := ensureUser("labstationd", "/usr/sbin/nologin", "/var/lib/decentralabs/lab-station", true, true, ""); err != nil {
 		return err
 	}
-	if err := ensureUser("labstationd", "/usr/sbin/nologin", "/var/lib/decentralabs/lab-station", true, true); err != nil {
-		return err
-	}
-	if err := ensureUser("labstation-ops", "/bin/sh", "/var/lib/labstation-ops", true, false); err != nil {
+	if err := ensureUser("labstation-ops", "/bin/sh", "/var/lib/labstation-ops", true, false, ""); err != nil {
 		return err
 	}
 	// OpenSSH rejects accounts marked with a leading !/* even when public-key
@@ -129,12 +132,16 @@ func Setup(args []string) error {
 		return errors.New("unable to disable password login for the SSH management account")
 	}
 	if cfg.Profile != "fmu-only" {
-		if err := ensureUser("labuser", "/bin/sh", tinyDeskSessionHome, false, false); err != nil {
+		// Keep a newly created RDP account locked until an administrator sets its password.
+		// ensureUser preserves the password state of an existing labuser account.
+		if err := ensureUser("labuser", "/bin/sh", tinyDeskSessionHome, false, true, ""); err != nil {
 			return err
 		}
 	}
-	if err := ensureUser("labstation-fmu", "/usr/sbin/nologin", "/var/lib/decentralabs/fmu-executor", true, true); err != nil {
-		return err
+	if withFMU {
+		if err := ensureUser("labstation-fmu", "/usr/sbin/nologin", "/var/lib/decentralabs/fmu-executor", true, true, "labstation-fmu"); err != nil {
+			return err
+		}
 	}
 	if err := addToGroup("labstationd", "labstation"); err != nil {
 		return err
@@ -142,11 +149,13 @@ func Setup(args []string) error {
 	if err := removeFromGroup("labstation-ops", "labstation"); err != nil {
 		return err
 	}
-	if err := removeFromGroup("labstation-fmu", "labstation"); err != nil {
-		return err
-	}
-	if err := addToGroup("labstation-fmu", "labstation-fmu"); err != nil {
-		return err
+	if withFMU {
+		if err := removeFromGroup("labstation-fmu", "labstation"); err != nil {
+			return err
+		}
+		if err := addToGroup("labstation-fmu", "labstation-fmu"); err != nil {
+			return err
+		}
 	}
 	if cfg.Profile != "fmu-only" {
 		if err := addToGroup("labuser", "labstation-lab"); err != nil {
@@ -199,19 +208,53 @@ func Setup(args []string) error {
 			return err
 		}
 	}
-	if *fmuSource != "" {
+	if withFMU {
 		if err := installFmuExecutor(*fmuSource); err != nil {
 			return err
 		}
 	}
-	if err := installSupervisor(cfg, *configPath, *fmuSource != ""); err != nil {
+	if err := installSupervisor(cfg, *configPath, withFMU); err != nil {
 		return err
 	}
 	if err := startManagementServices(cfg); err != nil {
 		return err
 	}
-	fmt.Println("Lab Station Linux setup completed. Set the labuser RDP password through your approved credential process before exposing Tiny Desk.")
+	fmt.Println("Lab Station Linux setup completed.")
+	if cfg.Profile != "fmu-only" {
+		fmt.Println("The installer does not generate or request a labuser password.")
+		fmt.Println("As root, run 'passwd labuser' to set one before exposing Tiny Desk.")
+	}
 	return nil
+}
+
+// ApplyApplicationProfile refreshes the protected Tiny Desk launch profile and
+// window bindings without rerunning host setup.
+func ApplyApplicationProfile(configPath string) error {
+	if os.Geteuid() != 0 {
+		return errors.New("app apply requires one administrative run as root")
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("unable to load station configuration: %w", err)
+	}
+	if cfg.Profile == "fmu-only" {
+		return errors.New("Tiny Desk is not available for the fmu-only profile")
+	}
+	openboxConfigPath := "/usr/share/decentralabs/lab-station/tiny-desk-rc.xml"
+	if err := os.MkdirAll(filepath.Dir(openboxConfigPath), 0755); err != nil {
+		return err
+	}
+	if err := writeManagedConfig(openboxConfigPath, tinyDeskOpenboxConfig, 0644); err != nil {
+		return err
+	}
+	if err := writeApplicationProfile(cfg); err != nil {
+		return err
+	}
+	supervisor := host.DetectSupervisor()
+	if supervisor == nil {
+		return errors.New("service supervisor unavailable while applying Tiny Desk applications")
+	}
+	return supervisor.ServiceAction(serviceUnit(supervisor.Name(), "decentralabs-labstation.service"), "restart")
 }
 
 func installDependencies(profile string, withFMU bool) error {
@@ -234,14 +277,14 @@ func installDependencies(profile string, withFMU bool) error {
 		switch manager {
 		case "apt":
 			if name == "debian" || name == "ubuntu" {
-				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "openbox")
+				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "xauth", "openbox")
 			}
 		case "dnf", "yum":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "openbox")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "xorg-x11-xauth", "openbox")
 		case "zypper":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "openbox")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "xauth", "openbox")
 		case "pacman":
-			packages = append(packages, "xrdp", "xorg-server", "openbox")
+			packages = append(packages, "xrdp", "xorg-server", "xorg-xauth", "openbox")
 		}
 	}
 	var command string
@@ -530,7 +573,7 @@ func ensureGroup(name string) error {
 	}
 	return exec.Command("groupadd", "--system", name).Run()
 }
-func ensureUser(name, shell, home string, system, lockPassword bool) error {
+func ensureUser(name, shell, home string, system, lockPassword bool, primaryGroup string) error {
 	created := exec.Command("id", "-u", name).Run() != nil
 	if created {
 		args := []string{"--create-home", "--home-dir", home, "--shell", shell}
@@ -540,13 +583,18 @@ func ensureUser(name, shell, home string, system, lockPassword bool) error {
 		if system {
 			args = append([]string{"--system"}, args...)
 		}
+		if primaryGroup != "" {
+			args = append(args, "--gid", primaryGroup)
+		}
 		args = append(args, name)
 		if err := exec.Command("useradd", args...).Run(); err != nil {
 			return fmt.Errorf("unable to create account %s: %w", name, err)
 		}
 	}
 	if lockPassword && (created || name != "labuser") {
-		_ = exec.Command("passwd", "--lock", name).Run()
+		if err := exec.Command("passwd", "--lock", name).Run(); err != nil {
+			return fmt.Errorf("unable to lock password for account %s: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -587,6 +635,16 @@ func writeConfig(path string, cfg config.Config) error {
 		args[i] = strconv.Quote(value)
 	}
 	content := fmt.Sprintf("[station]\nname = %s\nprofile = %s\nversion = %s\nstate_dir = %s\nconfig_dir = %s\nlog_dir = %s\nmanagement_user = %s\nmanagement_port = %d\nmanagement_public_key = %s\ntransport = %s\nsupervisor = %s\nguard_grace_seconds = %d\nallow_local_session_eviction = %t\n\n[application]\nid = %s\ncommand = %s\nargs = [%s]\nuser = %s\nclose_timeout_seconds = %d\n", strconv.Quote(cfg.Name), strconv.Quote(cfg.Profile), strconv.Quote(cfg.Version), strconv.Quote(cfg.StateDir), strconv.Quote(cfg.ConfigDir), strconv.Quote(cfg.LogDir), strconv.Quote(cfg.ManagementUser), cfg.ManagementPort, strconv.Quote(cfg.ManagementPublicKey), strconv.Quote(cfg.Transport), strconv.Quote(cfg.Supervisor), cfg.GuardGraceSeconds, cfg.AllowLocalSessionEviction, strconv.Quote(cfg.Application.ID), strconv.Quote(cfg.Application.Command), strings.Join(args, ", "), strconv.Quote(cfg.Application.User), cfg.Application.CloseTimeoutSeconds)
+	if len(cfg.Applications) > 0 {
+		content += "\n"
+		for _, application := range cfg.Applications {
+			applicationArgs := make([]string, len(application.Args))
+			for index, value := range application.Args {
+				applicationArgs[index] = strconv.Quote(value)
+			}
+			content += fmt.Sprintf("[[application.apps]]\nid = %s\ncommand = %s\nargs = [%s]\n\n", strconv.Quote(application.ID), strconv.Quote(application.Command), strings.Join(applicationArgs, ", "))
+		}
+	}
 	if err := atomicWrite(path, []byte(content), 0640); err != nil {
 		return err
 	}
@@ -598,9 +656,10 @@ func writeApplicationProfile(cfg config.Config) error {
 		return nil
 	}
 	profile := struct {
-		StateDir    string             `json:"stateDir"`
-		Application config.Application `json:"application"`
-	}{StateDir: cfg.StateDir, Application: cfg.Application}
+		StateDir     string                     `json:"stateDir"`
+		Application  config.Application         `json:"application"`
+		Applications []config.ApplicationLaunch `json:"applications,omitempty"`
+	}{StateDir: cfg.StateDir, Application: cfg.Application, Applications: cfg.Applications}
 	data, err := json.Marshal(profile)
 	if err != nil {
 		return err
@@ -613,6 +672,9 @@ func writeApplicationProfile(cfg config.Config) error {
 }
 
 func installDirectoryLayout(cfg config.Config) error {
+	if err := ensureLogParentAccess(); err != nil {
+		return err
+	}
 	shared := []string{cfg.StateDir, filepath.Join(cfg.StateDir, "commands"), filepath.Join(cfg.StateDir, "commands", "inbox"), filepath.Join(cfg.StateDir, "commands", "processing"), filepath.Join(cfg.StateDir, "commands", "processed"), filepath.Join(cfg.StateDir, "commands", "results"), cfg.LogDir}
 	for _, path := range shared {
 		if err := os.MkdirAll(path, 0o770); err != nil {
@@ -682,6 +744,27 @@ func installDirectoryLayout(cfg config.Config) error {
 	return nil
 }
 
+func ensureLogParentAccess() error {
+	const path = "/var/log/decentralabs"
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("unable to prepare Lab Station log parent: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Lab Station log parent must be a real directory")
+	}
+	if err := os.Chown(path, 0, lookupGroup("labstation")); err != nil {
+		return fmt.Errorf("unable to set Lab Station log parent group: %w", err)
+	}
+	if err := os.Chmod(path, 0710); err != nil {
+		return fmt.Errorf("unable to allow Lab Station log directory traversal: %w", err)
+	}
+	return nil
+}
+
 func installAuthorizedKey(key string) error {
 	if !publicKeyPattern.MatchString(key) {
 		return errors.New("invalid management public key")
@@ -719,7 +802,7 @@ func installSshPolicy() error {
 		return errors.New("OpenSSH server executable sshd was not found")
 	}
 	path := "/etc/ssh/sshd_config"
-	block := "# BEGIN DecentraLabs Lab Station policy\nMatch User labstation-ops\n    AuthenticationMethods publickey\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitUserRC no\n    PermitUserEnvironment no\n    ForceCommand /usr/lib/decentralabs/lab-station/labstation-dispatcher\n    AllowTcpForwarding no\n    AllowAgentForwarding no\n    X11Forwarding no\n    PermitTTY no\n    PermitTunnel no\n# END DecentraLabs Lab Station policy\n"
+	block := "# BEGIN DecentraLabs Lab Station policy\nMatch User labstation-ops\n    AuthenticationMethods publickey\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitUserRC no\n    ForceCommand /usr/lib/decentralabs/lab-station/labstation-dispatcher\n    AllowTcpForwarding no\n    AllowAgentForwarding no\n    X11Forwarding no\n    PermitTTY no\n    PermitTunnel no\n# END DecentraLabs Lab Station policy\n"
 	original, err := os.ReadFile(path)
 	if err != nil {
 		return errors.New("OpenSSH main configuration is unavailable")
@@ -786,9 +869,14 @@ func installSshPolicy() error {
 			_ = os.Remove(marker)
 		}
 	}
-	if err := exec.Command("sshd", "-t").Run(); err != nil {
+	validationOutput, err := exec.Command("sshd", "-t").CombinedOutput()
+	if err != nil {
 		rollback()
-		return errors.New("OpenSSH rejected the Lab Station user policy")
+		diagnostic := strings.TrimSpace(string(validationOutput))
+		if diagnostic != "" {
+			return fmt.Errorf("OpenSSH rejected the Lab Station user policy: %s: %w", diagnostic, err)
+		}
+		return fmt.Errorf("OpenSSH rejected the Lab Station user policy: %w", err)
 	}
 	out, err := exec.Command("sshd", "-T", "-C", "user=labstation-ops,host=localhost,addr=127.0.0.1").Output()
 	if err != nil {
@@ -1015,10 +1103,13 @@ func installTinyDeskSession(cfg config.Config) error {
 	if cfg.Application.Command != "" && !strings.HasPrefix(filepath.Clean(cfg.Application.Command), "/opt/lab/apps/") {
 		return errors.New("Tiny Desk application command must be under /opt/lab/apps")
 	}
-	if err := configureTinyDeskRdp(); err != nil {
+	if len(cfg.Applications) > 0 && cfg.Application.Command != "" {
+		return errors.New("configure either application.command or application.apps, not both")
+	}
+	if err := config.ValidateApplicationLaunches(cfg.Applications); err != nil {
 		return err
 	}
-	if err := configureTinyDeskSesman(); err != nil {
+	if err := configureTinyDeskRdp(); err != nil {
 		return err
 	}
 	openboxConfigPath := "/usr/share/decentralabs/lab-station/tiny-desk-rc.xml"
@@ -1035,25 +1126,36 @@ func installTinyDeskSession(cfg config.Config) error {
 		return err
 	} else {
 		for _, entry := range entries {
-			if !oneOf(entry.Name(), ".xsession", ".xsession.sha256", ".xsession-errors") {
+			if !oneOf(entry.Name(), ".xsession", ".xsession.sha256", ".xsession-errors", ".Xauthority") {
 				return fmt.Errorf("unexpected file in protected Tiny Desk home: %s", entry.Name())
 			}
+		}
+	}
+	account, err := user.Lookup("labuser")
+	if err != nil {
+		return fmt.Errorf("unable to resolve labuser account: %w", err)
+	}
+	if account.HomeDir != tinyDeskSessionHome {
+		output, err := exec.Command("usermod", "--home", tinyDeskSessionHome, "labuser").CombinedOutput()
+		if err != nil {
+			diagnostic := strings.TrimSpace(string(output))
+			if diagnostic != "" {
+				return fmt.Errorf("unable to set the protected Tiny Desk session home: %s: %w", diagnostic, err)
+			}
+			return fmt.Errorf("unable to set the protected Tiny Desk session home: %w", err)
 		}
 	}
 	userIDs, err := lookupUserIDs("labuser")
 	if err != nil {
 		return err
 	}
-	if err := exec.Command("usermod", "--home-dir", tinyDeskSessionHome, "labuser").Run(); err != nil {
-		return errors.New("unable to set the protected Tiny Desk session home")
-	}
 	workHome := tinyDeskWorkHome
-	for _, directory := range []string{workHome, filepath.Join(workHome, ".cache"), filepath.Join(workHome, ".config"), filepath.Join(workHome, ".local"), filepath.Join(workHome, ".local", "share")} {
+	for _, directory := range []string{workHome, filepath.Join(workHome, ".cache"), filepath.Join(workHome, "tmp"), filepath.Join(workHome, ".config"), filepath.Join(workHome, ".local"), filepath.Join(workHome, ".local", "share")} {
 		if err := ensureManagedDirectory(directory, userIDs.uid, userIDs.gid, 0700); err != nil {
 			return err
 		}
 	}
-	content := []byte("#!/bin/sh\nexport HOME=/var/lib/decentralabs/lab-station/tiny-desk-home\nexport XDG_CACHE_HOME=\"$HOME/.cache\"\nexport XDG_CONFIG_HOME=\"$HOME/.config\"\nexport XDG_DATA_HOME=\"$HOME/.local/share\"\numask 077\n/usr/bin/openbox --config-file /usr/share/decentralabs/lab-station/tiny-desk-rc.xml &\nexec /usr/bin/labstationctl app launch\n")
+	content := []byte("#!/bin/sh\nexport HOME=/var/lib/decentralabs/lab-station/tiny-desk-home\nexport TMPDIR=\"$HOME/tmp\"\nexport XDG_CACHE_HOME=\"$HOME/.cache\"\nexport XDG_CONFIG_HOME=\"$HOME/.config\"\nexport XDG_DATA_HOME=\"$HOME/.local/share\"\numask 077\n/usr/bin/openbox --config-file /usr/share/decentralabs/lab-station/tiny-desk-rc.xml &\nexec /usr/bin/labstationctl app launch\n")
 	sessionPath := filepath.Join(tinyDeskSessionHome, ".xsession")
 	if err := writeManagedConfig(sessionPath, string(content), 0755); err != nil {
 		return err
@@ -1073,6 +1175,27 @@ func installTinyDeskSession(cfg config.Config) error {
 		return err
 	}
 	if err := os.Lchown(errorLog, 0, 0); err != nil {
+		return err
+	}
+	authorityLink := filepath.Join(tinyDeskSessionHome, ".Xauthority")
+	authorityTarget := filepath.Join(workHome, ".Xauthority")
+	if existing, err := os.Lstat(authorityLink); err == nil {
+		if existing.Mode()&os.ModeSymlink == 0 {
+			return errors.New("Tiny Desk Xauthority path is not the managed workspace symlink")
+		}
+		current, err := os.Readlink(authorityLink)
+		if err != nil || current != authorityTarget {
+			return errors.New("Tiny Desk Xauthority path was changed outside Lab Station")
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else if err := os.Symlink(authorityTarget, authorityLink); err != nil {
+		return err
+	}
+	if err := os.Lchown(authorityLink, 0, 0); err != nil {
+		return err
+	}
+	if err := configureTinyDeskSesman(); err != nil {
 		return err
 	}
 	return nil
@@ -1133,16 +1256,25 @@ func lookupUserIDs(name string) (accountIDs, error) {
 	return accountIDs{uid: uint32(uid), gid: uint32(gid)}, nil
 }
 
-// The dedicated rc.xml omits every key and mouse binding. Openbox's default
-// configuration exposes a root menu and desktop shortcuts, so Tiny Desk uses
-// this explicit configuration and launches the one approved lab application.
+// The dedicated rc.xml exposes only window switching and closing shortcuts.
+// Openbox's default configuration exposes a root menu and desktop shortcuts.
 const tinyDeskOpenboxConfig = `<?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <desktops>
     <number>1</number>
     <firstdesk>1</firstdesk>
   </desktops>
-  <keyboard/>
+  <keyboard>
+    <keybind key="A-Tab">
+      <action name="NextWindow"/>
+    </keybind>
+    <keybind key="A-S-Tab">
+      <action name="PreviousWindow"/>
+    </keybind>
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+  </keyboard>
   <mouse/>
   <applications>
     <application class="*">
@@ -1310,9 +1442,8 @@ func configureTinyDeskRdp() error {
 	return atomicWrite(marker, []byte(hex.EncodeToString(digest[:])+"\n"), 0600)
 }
 
-// xrdp-sesman keeps the Xauthority cookie under a system-owned runtime path.
-// That lets the session home remain root-owned so labuser cannot replace the
-// startup script or add Xsession startup hooks.
+// configureTinyDeskSesman keeps labuser's Xauthority and Xorg log writable
+// while preserving the original XRDP commands for other accounts.
 func configureTinyDeskSesman() error {
 	path := "/etc/xrdp/sesman.ini"
 	original, err := os.ReadFile(path)
@@ -1339,42 +1470,33 @@ func configureTinyDeskSesman() error {
 	} else if !os.IsNotExist(readErr) {
 		return readErr
 	}
-	lines := strings.Split(string(original), "\n")
-	section := ""
-	foundGlobals := false
-	seenAuthority := false
-	output := make([]string, 0, len(lines)+1)
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if strings.EqualFold(section, "Globals") && !seenAuthority {
-				output = append(output, "XAuthorityInSystemDir=yes")
-				seenAuthority = true
-			}
-			section = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
-			if strings.EqualFold(section, "Globals") {
-				foundGlobals = true
-			}
-			output = append(output, line)
-			continue
-		}
-		if strings.EqualFold(section, "Globals") && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, ";") {
-			key, _, ok := strings.Cut(trimmed, "=")
-			if ok && strings.EqualFold(strings.TrimSpace(key), "XAuthorityInSystemDir") {
-				line = "XAuthorityInSystemDir=yes"
-				seenAuthority = true
-			}
-		}
-		output = append(output, line)
+	updatedText, originalXorg, originalPath, err := transformXrdpSesmanConfig(string(original))
+	if err != nil {
+		return err
 	}
-	if strings.EqualFold(section, "Globals") && !seenAuthority {
-		output = append(output, "XAuthorityInSystemDir=yes")
-		seenAuthority = true
+	if !xrdpSessionHasXauth(originalPath, tinyDeskSessionHome) {
+		return errors.New("xauth is unavailable on the original XRDP session PATH")
 	}
-	if !foundGlobals || !seenAuthority {
-		return errors.New("sesman.ini has no usable [Globals] section; refusing an unprotected Tiny Desk home")
+	ids, err := lookupUserIDs("labuser")
+	if err != nil {
+		return err
 	}
-	updated := []byte(strings.Join(output, "\n"))
+	idPath, err := xrdpIDExecutable()
+	if err != nil {
+		return err
+	}
+	if err := ensureManagedDirectory(tinyDeskXauthShimDir, 0, 0, 0755); err != nil {
+		return err
+	}
+	xauthShim := renderXrdpXauthShim(ids.uid, idPath, originalPath, filepath.Join(tinyDeskWorkHome, ".Xauthority"))
+	if err := writeManagedConfig(filepath.Join(tinyDeskXauthShimDir, "xauth"), xauthShim, 0755); err != nil {
+		return err
+	}
+	xorgShim := renderXrdpXorgShim(ids.uid, idPath, originalXorg, filepath.Join(tinyDeskWorkHome, ".xorgxrdp.%s.log"))
+	if err := writeManagedConfig(tinyDeskXorgShimPath, xorgShim, 0755); err != nil {
+		return err
+	}
+	updated := []byte(updatedText)
 	if err := atomicWrite(path, updated, 0644); err != nil {
 		return err
 	}
@@ -1423,6 +1545,11 @@ User=labstation-fmu
 Group=labstation-fmu
 EnvironmentFile=-/etc/decentralabs/lab-station/secrets/fmu-internal-token.env
 Environment=FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data
+Environment=FMU_MAX_SIMULATION_STEPS=600000
+Environment=FMU_MAX_SIMULATION_PARAMETERS=256
+Environment=FMU_MAX_OUTPUT_SUBSCRIPTION_HZ=1000
+Environment=FMU_MAX_INPUT_SCHEDULE_EVENTS=120000
+Environment=FMU_MAX_INPUT_SCHEDULE_BYTES=16777216
 WorkingDirectory=/opt/decentralabs/fmu-executor
 ExecStart=/opt/decentralabs/fmu-executor/.venv/bin/python -m app
 Restart=on-failure
@@ -1458,7 +1585,7 @@ WantedBy=multi-user.target
 			return err
 		}
 		if withFMU {
-			fmuScript := "#!/sbin/openrc-run\ncommand=/opt/decentralabs/fmu-executor/.venv/bin/python\ncommand_args=\"-m app\"\ncommand_user=labstation-fmu:labstation-fmu\ncommand_background=true\npidfile=/run/${RC_SVCNAME}.pid\noutput_log=/var/log/decentralabs/lab-station/fmu-executor.log\nerror_log=/var/log/decentralabs/lab-station/fmu-executor.log\nstart_pre() { [ -r /etc/decentralabs/lab-station/secrets/fmu-internal-token.env ] || return 1; . /etc/decentralabs/lab-station/secrets/fmu-internal-token.env; export FMU_INTERNAL_TOKEN_B64; export FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data; }\n"
+			fmuScript := "#!/sbin/openrc-run\ncommand=/opt/decentralabs/fmu-executor/.venv/bin/python\ncommand_args=\"-m app\"\ncommand_user=labstation-fmu:labstation-fmu\ncommand_background=true\npidfile=/run/${RC_SVCNAME}.pid\noutput_log=/var/log/decentralabs/lab-station/fmu-executor.log\nerror_log=/var/log/decentralabs/lab-station/fmu-executor.log\nstart_pre() { [ -r /etc/decentralabs/lab-station/secrets/fmu-internal-token.env ] || return 1; . /etc/decentralabs/lab-station/secrets/fmu-internal-token.env; export FMU_INTERNAL_TOKEN_B64; export FMU_ROOT=/var/lib/decentralabs/fmu-executor/fmu-data; export FMU_MAX_SIMULATION_STEPS=600000; export FMU_MAX_SIMULATION_PARAMETERS=256; export FMU_MAX_OUTPUT_SUBSCRIPTION_HZ=1000; export FMU_MAX_INPUT_SCHEDULE_EVENTS=120000; export FMU_MAX_INPUT_SCHEDULE_BYTES=16777216; }\n"
 			if err := os.WriteFile("/etc/init.d/decentralabs-labstation-fmu", []byte(fmuScript), 0755); err != nil {
 				return err
 			}
@@ -1511,6 +1638,9 @@ func startManagementServices(cfg config.Config) error {
 			if !started {
 				return errors.New("xrdp service could not be enabled")
 			}
+			if err := exec.Command("systemctl", "restart", "xrdp-sesman.service").Run(); err != nil {
+				return fmt.Errorf("xrdp-sesman could not reload the Tiny Desk configuration: %w", err)
+			}
 			restarted := false
 			for _, unit := range []string{"xrdp.service", "xrdp"} {
 				if exec.Command("systemctl", "restart", unit).Run() == nil {
@@ -1551,6 +1681,11 @@ func startManagementServices(cfg config.Config) error {
 		if cfg.Profile != "fmu-only" {
 			if err := exec.Command("rc-update", "add", "xrdp", "default").Run(); err != nil {
 				return err
+			}
+			if exec.Command("rc-service", "-e", "xrdp-sesman").Run() == nil {
+				if err := exec.Command("rc-service", "xrdp-sesman", "restart").Run(); err != nil {
+					return fmt.Errorf("xrdp-sesman could not reload the Tiny Desk configuration: %w", err)
+				}
 			}
 			if exec.Command("rc-service", "xrdp", "start").Run() != nil {
 				if err := exec.Command("rc-service", "xrdp", "restart").Run(); err != nil {

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0] - 2026-11-13
+
+### Fixed
+- Correct the pinned FMU Executor runtime and Smart Warehouse app digests so release bundles validate against the pinned source.
+
+### Added
+- Include the Linux x64 Smart Warehouse FMU, companion GLB and Three.js app in
+  amd64 Station releases, pinned to the canonical FMU Executor assets.
+- Expose companion GLB assets to the authenticated Gateway through the shared
+  FMU Executor service.
+
+### Changed
+- Keep the arm64 Station packages free of the x86_64-only demo model.
+
 ## [0.3.0] - 2026-10-09
 
 ### Added

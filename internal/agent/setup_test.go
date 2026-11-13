@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"reflect"
@@ -234,11 +235,34 @@ func TestSetupEndToEnd(t *testing.T) {
 	if err := os.WriteFile("/etc/xrdp/xrdp.ini", []byte("[Globals]\nallow_channels=true\nallow_multimon=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile("/etc/xrdp/sesman.ini", []byte("[Globals]\nXAuthorityInSystemDir=no\n"), 0o644); err != nil {
+	if err := os.WriteFile("/etc/xrdp/sesman.ini", []byte("[Globals]\nEnableUserWindowManager=true\n\n[Security]\nXAuthorityInSystemDir=no\n\n[Xorg]\nparam=Xorg\nparam=-config\nparam=xrdp/xorg.conf\nparam=-noreset\nparam=-nolisten\nparam=tcp\nparam=-logfile\nparam=.xorgxrdp.%s.log\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	configPath := "/etc/decentralabs/lab-station/e2e.toml"
+	noFMUConfigPath := "/etc/decentralabs/lab-station/e2e-no-fmu.toml"
 	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB labstation-test"
+	noFMUArgs := []string{
+		"--profile=hybrid",
+		"--management-public-key=" + key,
+		"--ssh-port=2222",
+		"--config=" + noFMUConfigPath,
+		"--no-install-deps",
+	}
+	if err := Setup(noFMUArgs); err != nil {
+		t.Fatalf("Setup() failed without FMU Executor source in isolated systemd container: %v", err)
+	}
+	if _, err := os.Stat("/tmp/labstation-test-usermod.log"); !os.IsNotExist(err) {
+		t.Fatalf("setup called usermod even though labuser already had the protected home: %v", err)
+	}
+	if _, err := user.Lookup("labstation-fmu"); err == nil {
+		t.Fatal("setup created labstation-fmu without an FMU Executor source")
+	}
+	if _, err := user.LookupGroup("labstation-fmu"); err == nil {
+		t.Fatal("setup created the labstation-fmu group without an FMU Executor source")
+	}
+	if _, err := os.Stat("/etc/systemd/system/decentralabs-labstation-fmu.service"); !os.IsNotExist(err) {
+		t.Fatalf("FMU service exists without an FMU Executor source: %v", err)
+	}
 	args := []string{
 		"--profile=hybrid",
 		"--management-public-key=" + key,
@@ -250,6 +274,17 @@ func TestSetupEndToEnd(t *testing.T) {
 	}
 	if err := Setup(args); err != nil {
 		t.Fatalf("Setup() failed in isolated systemd container: %v", err)
+	}
+	fmuAccount, err := user.Lookup("labstation-fmu")
+	if err != nil {
+		t.Fatalf("FMU source setup did not create its service account: %v", err)
+	}
+	fmuGroup, err := user.LookupGroup("labstation-fmu")
+	if err != nil {
+		t.Fatalf("FMU source setup did not create its service group: %v", err)
+	}
+	if fmuAccount.Gid != fmuGroup.Gid {
+		t.Errorf("FMU service account primary gid = %s, want labstation-fmu gid %s", fmuAccount.Gid, fmuGroup.Gid)
 	}
 
 	configData, err := os.ReadFile(configPath)
@@ -280,8 +315,22 @@ func TestSetupEndToEnd(t *testing.T) {
 	if target, err := os.Readlink(filepath.Join(tinyDeskSessionHome, ".xsession-errors")); err != nil || target != filepath.Join(tinyDeskWorkHome, ".xsession-errors") {
 		t.Errorf("Xsession log path is not redirected to the writable workspace: %q, %v", target, err)
 	}
+	if target, err := os.Readlink(filepath.Join(tinyDeskSessionHome, ".Xauthority")); err != nil || target != filepath.Join(tinyDeskWorkHome, ".Xauthority") {
+		t.Errorf("Xauthority path is not redirected to the writable workspace: %q, %v", target, err)
+	}
 	if account, err := user.Lookup("labuser"); err != nil || account.HomeDir != tinyDeskSessionHome {
 		t.Errorf("labuser account home is not the protected Tiny Desk session directory: %#v, %v", account, err)
+	}
+	if err := exec.Command("usermod", "--home", "/home/labuser", "labuser").Run(); err != nil {
+		t.Fatalf("failed to prepare a labuser home change for the diagnostic test: %v", err)
+	}
+	t.Setenv("LABSTATION_TEST_USERMOD_FAIL", "1")
+	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err == nil || !strings.Contains(err.Error(), "Synthetic home update failure") {
+		t.Errorf("Tiny Desk setup did not expose usermod's diagnostic: %v", err)
+	}
+	t.Setenv("LABSTATION_TEST_USERMOD_FAIL", "0")
+	if err := exec.Command("usermod", "--home", tinyDeskSessionHome, "labuser").Run(); err != nil {
+		t.Fatalf("failed to restore the protected labuser home after the diagnostic test: %v", err)
 	}
 	if ids, err := lookupUserIDs("labuser"); err != nil {
 		t.Errorf("labuser uid/gid are unavailable for the writable application workspace: %v", err)
@@ -303,8 +352,8 @@ func TestSetupEndToEnd(t *testing.T) {
 		t.Errorf("original RDP config was not backed up: %v", err)
 	}
 	sesman, err := os.ReadFile("/etc/xrdp/sesman.ini")
-	if err != nil || !strings.Contains(string(sesman), "XAuthorityInSystemDir=yes") {
-		t.Errorf("xrdp-sesman did not move Xauthority outside the protected home: %q, %v", sesman, err)
+	if err != nil || !strings.Contains(string(sesman), "param="+tinyDeskXorgShimPath) || !strings.Contains(string(sesman), "PATH="+tinyDeskXauthShimDir+":") {
+		t.Errorf("xrdp-sesman did not configure account-scoped startup: %q, %v", sesman, err)
 	}
 	if _, err := os.Stat("/etc/xrdp/sesman.ini.decentralabs-lab-station.bak"); err != nil {
 		t.Errorf("original xrdp-sesman config was not backed up: %v", err)
@@ -323,6 +372,10 @@ func TestSetupEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat("/etc/systemd/system/decentralabs-labstation-fmu.service"); err != nil {
 		t.Errorf("FMU service unit was not installed for the supplied source: %v", err)
+	}
+	fmuService, fmuServiceErr := os.ReadFile("/etc/systemd/system/decentralabs-labstation-fmu.service")
+	if fmuServiceErr != nil || !strings.Contains(string(fmuService), "Environment=FMU_MAX_SIMULATION_PARAMETERS=256") {
+		t.Errorf("systemd FMU service omitted the shared parameter ceiling: %q, %v", fmuService, fmuServiceErr)
 	}
 	if info, err := os.Stat("/var/lib/decentralabs/fmu-executor/fmu-data"); err != nil || info.Mode().Perm() != 0o750 {
 		t.Errorf("FMU state directory is not private to the FMU account: %v, %v", info, err)
@@ -352,6 +405,22 @@ func TestSetupEndToEnd(t *testing.T) {
 	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err != nil {
 		t.Fatalf("Tiny Desk could not restore the managed session log link after rejection: %v", err)
 	}
+	authorityLink := filepath.Join(tinyDeskSessionHome, ".Xauthority")
+	if err := os.Remove(authorityLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/tmp/unmanaged-xauthority", authorityLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err == nil {
+		t.Error("Tiny Desk setup accepted an unmanaged Xauthority target")
+	}
+	if err := os.Remove(authorityLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err != nil {
+		t.Fatalf("Tiny Desk could not restore the Xauthority link after rejection: %v", err)
+	}
 	if mode, err := os.ReadFile("/tmp/labstation-test-wol-mode"); err != nil || strings.TrimSpace(string(mode)) != "g" {
 		t.Errorf("Wake-on-LAN did not remain enabled: %q, %v", mode, err)
 	}
@@ -366,6 +435,38 @@ func TestSetupEndToEnd(t *testing.T) {
 		!strings.Contains(string(sshConfig), "PasswordAuthentication no") {
 		t.Errorf("management SSH policy was not installed: %q, %v", sshConfig, err)
 	}
+	policyStart := strings.Index(string(sshConfig), "# BEGIN DecentraLabs Lab Station policy")
+	policyEnd := strings.Index(string(sshConfig), "# END DecentraLabs Lab Station policy")
+	if policyStart < 0 || policyEnd <= policyStart {
+		t.Errorf("managed SSH policy block is missing or malformed: %q", sshConfig)
+	} else {
+		policyBlock := string(sshConfig[policyStart:policyEnd])
+		for _, required := range []string{
+			"Match User labstation-ops",
+			"AuthenticationMethods publickey",
+			"PasswordAuthentication no",
+			"KbdInteractiveAuthentication no",
+			"PermitUserRC no",
+			"ForceCommand /usr/lib/decentralabs/lab-station/labstation-dispatcher",
+			"AllowTcpForwarding no",
+			"AllowAgentForwarding no",
+			"X11Forwarding no",
+			"PermitTTY no",
+			"PermitTunnel no",
+		} {
+			if !strings.Contains(policyBlock, required) {
+				t.Errorf("managed SSH policy omitted %q", required)
+			}
+		}
+		if strings.Contains(policyBlock, "PermitUserEnvironment") {
+			t.Error("managed SSH Match block contains PermitUserEnvironment, which Ubuntu 22.04 OpenSSH rejects")
+		}
+	}
+	t.Setenv("LABSTATION_TEST_SSHD_PERMIT_USER_ENVIRONMENT", "yes")
+	if err := installSshPolicy(); err == nil || !strings.Contains(err.Error(), "OpenSSH did not apply the restricted Station management policy") {
+		t.Errorf("effective SSH policy accepted PermitUserEnvironment yes: %v", err)
+	}
+	t.Setenv("LABSTATION_TEST_SSHD_PERMIT_USER_ENVIRONMENT", "no")
 	if _, err := os.Stat("/etc/ssh/sshd_config.decentralabs-lab-station.bak"); err != nil {
 		t.Errorf("original SSH policy was not backed up: %v", err)
 	}
@@ -373,7 +474,7 @@ func TestSetupEndToEnd(t *testing.T) {
 		t.Errorf("hybrid profile did not create the protected Tiny Desk home: %v", err)
 	}
 	serviceLog, err := os.ReadFile("/tmp/labstation-test-systemctl.log")
-	if err != nil || !strings.Contains(string(serviceLog), "enable --now xrdp.service") {
+	if err != nil || !strings.Contains(string(serviceLog), "enable --now xrdp.service") || !strings.Contains(string(serviceLog), "restart xrdp-sesman.service") {
 		t.Errorf("xrdp was not enabled for the graphical profile: %q, %v", serviceLog, err)
 	}
 	if err := Setup(args); err != nil {
@@ -404,7 +505,8 @@ func TestSetupEndToEnd(t *testing.T) {
 	}
 	t.Setenv("LABSTATION_TEST_SSHD_FAIL", "1")
 	err = Setup(args)
-	if err == nil || !strings.Contains(err.Error(), "OpenSSH rejected the Lab Station user policy") {
+	if err == nil || !strings.Contains(err.Error(), "OpenSSH rejected the Lab Station user policy") ||
+		!strings.Contains(err.Error(), "SyntheticDirective") {
 		t.Fatalf("Setup() did not report invalid SSH policy validation: %v", err)
 	}
 	if restored, readErr := os.ReadFile(sshdConfig); readErr != nil || string(restored) != "PermitRootLogin no\n" {
@@ -437,6 +539,10 @@ func TestSetupEndToEnd(t *testing.T) {
 		if err != nil || !strings.Contains(string(data), want) {
 			t.Errorf("OpenRC script %s omitted %q: %q, %v", path, want, data, err)
 		}
+	}
+	fmuOpenRC, fmuOpenRCErr := os.ReadFile("/etc/init.d/decentralabs-labstation-fmu")
+	if fmuOpenRCErr != nil || !strings.Contains(string(fmuOpenRC), "FMU_MAX_SIMULATION_PARAMETERS=256") {
+		t.Errorf("OpenRC FMU service omitted the shared parameter ceiling: %q, %v", fmuOpenRC, fmuOpenRCErr)
 	}
 	if err := startManagementServices(openRCCfg); err != nil {
 		t.Fatalf("OpenRC service activation failed: %v", err)

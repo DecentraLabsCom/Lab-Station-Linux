@@ -22,6 +22,19 @@ printf '#!/bin/sh\nexit 0\n' > "$PAYLOAD/usr/lib/decentralabs/lab-station/labsta
 printf '#!/bin/sh\nexit 0\n' > "$PAYLOAD/usr/lib/decentralabs/lab-station/labstation-helper-bin"
 chmod 0755 "$PAYLOAD/usr/bin/labstationd" "$PAYLOAD/usr/lib/decentralabs/lab-station/labstation-dispatcher-bin" "$PAYLOAD/usr/lib/decentralabs/lab-station/labstation-helper-bin"
 
+# A portable bundle may be unpacked by an unprivileged user. Installing it
+# must never copy that user's ownership or directory modes onto the system.
+mkdir -p "$PAYLOAD/etc/decentralabs/lab-station" "$PAYLOAD/usr/share/doc/lab-station-linux"
+printf 'example\n' > "$PAYLOAD/etc/decentralabs/lab-station/station.toml.example"
+printf 'readme\n' > "$PAYLOAD/usr/share/doc/lab-station-linux/README.md"
+chown -R 12345:12345 "$PAYLOAD"
+chmod 0775 "$PAYLOAD" "$PAYLOAD/usr" "$PAYLOAD/usr/bin" "$PAYLOAD/etc"
+mkdir -p /usr/lib/decentralabs/lab-station
+chmod 0750 /usr/lib/decentralabs/lab-station
+before=$(stat -c '%u:%g:%a' / /usr /usr/bin /etc /usr/lib/decentralabs/lab-station)
+printf 'old\n' > /usr/bin/labstationd
+chown 12345:12345 /usr/bin/labstationd
+
 export LABSTATION_PAYLOAD="$PAYLOAD"
 export LABSTATION_TEST_SETUP_ARGS="$TEMP_DIR/setup-args"
 sh "$ROOT/packaging/install.sh" \
@@ -29,6 +42,23 @@ sh "$ROOT/packaging/install.sh" \
     --management-public-key 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA station-test' \
     --wake-interface enp0s1 \
     --no-install-deps
+
+after=$(stat -c '%u:%g:%a' / /usr /usr/bin /etc /usr/lib/decentralabs/lab-station)
+if [ "$before" != "$after" ]; then
+    echo 'Installer changed the ownership or permissions of an existing system directory.' >&2
+    printf 'Before:\n%s\nAfter:\n%s\n' "$before" "$after" >&2
+    exit 1
+fi
+for file in /usr/bin/labstationctl /usr/bin/labstationd \
+    /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin \
+    /usr/lib/decentralabs/lab-station/labstation-helper-bin \
+    /etc/decentralabs/lab-station/station.toml.example \
+    /usr/share/doc/lab-station-linux/README.md; do
+    if [ "$(stat -c '%u:%g' "$file")" != '0:0' ]; then
+        echo "Installer did not install a root-owned file: $file" >&2
+        exit 1
+    fi
+done
 
 expected="$TEMP_DIR/expected-args"
 cat > "$expected" <<'EOF'

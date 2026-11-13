@@ -36,7 +36,7 @@ func main() {
 		case "launch":
 			profile, err := loadApplicationProfile("/usr/share/decentralabs/lab-station/app-profile.json")
 			if err != nil || launchApplication(profile) != nil {
-				fmt.Fprintln(os.Stderr, "application launch denied")
+				fmt.Fprintln(os.Stderr, "application launch failed")
 				os.Exit(2)
 			}
 			return

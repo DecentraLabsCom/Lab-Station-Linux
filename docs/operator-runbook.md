@@ -104,6 +104,11 @@ unavailable until every configured executable exists and is executable. For
 one application, continue using `application.command` and `application.args`
 as before.
 
+Executable availability is a configuration check, not a test launch. In
+particular, Chromium installed as a Snap has failed when its launcher tried to
+create data in the protected, root-owned `labuser` home. Prefer a compatible
+non-Snap browser for this setup and verify it in an actual RDP session.
+
 An authorized provider may use the provider-managed RDP connection to start
 Tiny Desk outside a reservation or demo. This operator path does not require an
 active lease. End-user access still follows Gateway's authorized reservation or
@@ -146,6 +151,13 @@ expected in that case. Inspect the Xorg log and session-manager journal first:
 sudo find /var/lib/decentralabs/lab-station/tiny-desk-home -maxdepth 1 -type f -name '.xorgxrdp.*.log' -print
 sudo tail -n 100 /var/log/xrdp-sesman.log
 sudo tail -n 100 /var/lib/decentralabs/lab-station/tiny-desk-home/.xsession-errors
+```
+
+On Ubuntu, Xsession may instead direct errors to a temporary file. When
+`/tmp/xsession-labuser` exists, read it as its owner:
+
+```sh
+sudo -u labuser tail -n 100 /tmp/xsession-labuser
 ```
 
 The actual `labuser` session home is root-owned and read-only. Lab Station

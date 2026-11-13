@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "DecentraLabsCom/Lab-Gateway",
-  "commit": "0cb8394b9409e711adae73530f1a6867224c86ad",
+  "commit": "29e27d518fe4f414ef2a95ca4dbb0e9836021028",
   "files": [
     {
       "source": "contracts/station/README.md",
       "target": "gateway-contracts/README.md",
-      "sha256": "ecde676d1d75796beb1193839c48e491c6753d7fe0ffb31ff4be98fbd8323511"
+      "sha256": "931b5610b8544245591e8b0e1be5c31138f635096dbef4436d00bdbd8581ba95"
     },
     {
       "source": "contracts/station/dispatcher/fixtures/failure-v2-response.fixture.json",
@@ -96,7 +96,7 @@
     {
       "source": "docs/station-test-parity.json",
       "target": "v3/test-parity.json",
-      "sha256": "858f3ada07c5c7bce51903da5dac42b9ac274c0761eccceb175462494a8c52c6"
+      "sha256": "5cb36d2ccbf98cc93c945163457ebca22b7694aac602ed760f711167d87ee424"
     }
   ]
 }

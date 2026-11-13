@@ -210,17 +210,30 @@ sudo labstationctl local-mode set --ttl=28800
 sudo labstationctl local-mode clear
 ```
 
+A valid expiry or recognized legacy timestamp ends the flag. A malformed or
+marker-only flag remains active until `clear`; file modification time is not
+used to infer when local use began.
+
 Enable local mode only on a `hybrid` station, with a successful session
 inventory and no active reservation or remote lab-user session; it marks
 exclusive instructor use and expires after eight hours by default. `clear`
 remains available on any profile to remove a stale flag. `Prepare` and `Release` are supported only for
 `dedicated` and `hybrid` physical stations. Prepare rejects local mode and an
-unexpected user on a dedicated station. On hybrid, it warns and evicts a local
-session after the 90-second Gateway grace period by default. New Linux setups
-enable `station.allow_local_session_eviction` to match Windows hybrid behavior;
-set it to `false` to make Prepare fail safely without terminating an instructor
-session. Release closes only the managed remote `labuser` session and is
-rejected while a reservation or demo lease is active.
+unexpected local console session on a dedicated station. On hybrid, the default
+policy warns and evicts an eligible local session after the 90-second Gateway
+grace period (minimum 30 seconds). Set
+`station.allow_local_session_eviction = false` to make Prepare fail safely
+without terminating an instructor session; Windows uses the equivalent
+`AllowLocalSessionEviction=false` entry in `labstation/data/station-profile.ini`.
+`--no-guard` skips notification and grace but still evicts immediately when the
+policy allows it. Release closes only the managed remote `labuser` session and
+is rejected while a reservation or demo lease is active.
+
+Before each physical reservation, Prepare clears Tiny Desk `tmp`, cache,
+Downloads, `Documents/LabStationScratch`, the XDG trash and recent-file list.
+It restarts an installed FMU Executor to close its sessions and clears its
+temporary work directory. It preserves desktop/application configuration and
+FMU models. A cleanup problem is reported as an operational warning.
 
 Before changing energy or reboot state, inspect the report and make sure no
 active user or FMU work would be interrupted:

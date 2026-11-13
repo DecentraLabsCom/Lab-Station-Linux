@@ -242,6 +242,73 @@ func TestLocalModeLegacyMarkerExpiresAfterEightHours(t *testing.T) {
 	}
 }
 
+func TestLocalModeMarkerPolicyMatchesSharedMatrix(t *testing.T) {
+	matrix := loadPortableParityMatrix(t)
+	policy := matrix.LocalMode
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, sessionsOK: true}
+	a, _ := newTestAgent(t, "hybrid", runtime)
+	markerPath := filepath.Join(a.Config.StateDir, "local-mode.flag")
+
+	if err := os.WriteFile(markerPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if policy.MalformedLegacyMarker != "active-until-explicit-clear" || !a.localModeEnabled() {
+		t.Fatal("malformed local-mode marker must remain active until explicitly cleared")
+	}
+
+	expired := time.Now().UTC().Add(-9 * time.Hour).Format(time.RFC3339Nano)
+	if err := os.WriteFile(markerPath, []byte(expired), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if policy.ExpiredLegacyTimestamp != "inactive" || a.localModeEnabled() {
+		t.Fatal("expired legacy local-mode timestamp must be cleared")
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("expired marker was not removed: %v", err)
+	}
+}
+
+func TestStatusSummaryTracksPrimaryCapability(t *testing.T) {
+	matrix := loadPortableParityMatrix(t)
+	for _, profile := range matrix.PortableStatus.Profiles {
+		t.Run(profile, func(t *testing.T) {
+			runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, sessionsOK: true}
+			a, _ := newTestAgent(t, profile, runtime)
+			raw, err := json.Marshal(a.Status())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var status map[string]any
+			if err := json.Unmarshal(raw, &status); err != nil {
+				t.Fatal(err)
+			}
+			assertPortableStatusContract(t, status, "linux", matrix)
+		})
+	}
+}
+
+func TestPrepareLocalSessionPolicyMatchesSharedMatrix(t *testing.T) {
+	matrix := loadPortableParityMatrix(t)
+	policy := matrix.SessionSafety.PrepareDecision
+	cases := []struct {
+		name, profile, expected string
+		count                   int
+		allowEviction           bool
+	}{
+		{name: "no-local-session", profile: "hybrid", expected: policy["noLocalSession"]},
+		{name: "dedicated-protects-local-user", profile: "dedicated", count: 1, expected: policy["dedicatedLocalSession"]},
+		{name: "hybrid-protects-unless-authorized", profile: "hybrid", count: 1, expected: policy["hybridLocalSessionWithoutAuthorization"]},
+		{name: "hybrid-evicts-after-authorization", profile: "hybrid", count: 1, allowEviction: true, expected: policy["hybridLocalSessionWithAuthorization"]},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := localSessionPrepareDecision(testCase.profile, testCase.count, testCase.allowEviction); got != testCase.expected {
+				t.Fatalf("prepare decision = %q, want shared matrix value %q", got, testCase.expected)
+			}
+		})
+	}
+}
+
 func TestPrepareSessionRefusesUnsafeProfilesAndReleasesHybridSessions(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
 	if matrix.SessionSafety.LocalSession != "protect-unless-authorized" {

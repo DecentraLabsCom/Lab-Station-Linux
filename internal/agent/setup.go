@@ -1150,12 +1150,12 @@ func installTinyDeskSession(cfg config.Config) error {
 		return err
 	}
 	workHome := tinyDeskWorkHome
-	for _, directory := range []string{workHome, filepath.Join(workHome, ".cache"), filepath.Join(workHome, ".config"), filepath.Join(workHome, ".local"), filepath.Join(workHome, ".local", "share")} {
+	for _, directory := range []string{workHome, filepath.Join(workHome, ".cache"), filepath.Join(workHome, "tmp"), filepath.Join(workHome, ".config"), filepath.Join(workHome, ".local"), filepath.Join(workHome, ".local", "share")} {
 		if err := ensureManagedDirectory(directory, userIDs.uid, userIDs.gid, 0700); err != nil {
 			return err
 		}
 	}
-	content := []byte("#!/bin/sh\nexport HOME=/var/lib/decentralabs/lab-station/tiny-desk-home\nexport XDG_CACHE_HOME=\"$HOME/.cache\"\nexport XDG_CONFIG_HOME=\"$HOME/.config\"\nexport XDG_DATA_HOME=\"$HOME/.local/share\"\numask 077\n/usr/bin/openbox --config-file /usr/share/decentralabs/lab-station/tiny-desk-rc.xml &\nexec /usr/bin/labstationctl app launch\n")
+	content := []byte("#!/bin/sh\nexport HOME=/var/lib/decentralabs/lab-station/tiny-desk-home\nexport TMPDIR=\"$HOME/tmp\"\nexport XDG_CACHE_HOME=\"$HOME/.cache\"\nexport XDG_CONFIG_HOME=\"$HOME/.config\"\nexport XDG_DATA_HOME=\"$HOME/.local/share\"\numask 077\n/usr/bin/openbox --config-file /usr/share/decentralabs/lab-station/tiny-desk-rc.xml &\nexec /usr/bin/labstationctl app launch\n")
 	sessionPath := filepath.Join(tinyDeskSessionHome, ".xsession")
 	if err := writeManagedConfig(sessionPath, string(content), 0755); err != nil {
 		return err

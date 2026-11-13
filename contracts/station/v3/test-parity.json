@@ -1,6 +1,6 @@
 {
   "source": "Lab Gateway/docs/station-test-parity.json",
-  "version": 1,
+  "version": 2,
   "portableStatus": {
     "schemaVersion": "3.0.0",
     "requiredFields": [
@@ -22,7 +22,14 @@
     "summaryStates": ["ready", "degraded", "unavailable", "unknown"],
     "readinessCapabilities": ["physicalLab", "wake", "fmu"],
     "sessionKinds": ["local", "management", "remote", "service", "unknown"],
-    "sessionRequiredFields": ["kind", "active", "evictable"]
+    "sessionRequiredFields": ["kind", "active", "evictable"],
+    "primaryCapabilityByProfile": {
+      "dedicated": "physicalLab",
+      "hybrid": "physicalLab",
+      "fmu-only": "fmu"
+    },
+    "readyState": "ready",
+    "notReadyStates": ["degraded", "unavailable"]
   },
   "platforms": {
     "windows": {
@@ -36,7 +43,29 @@
   },
   "sessionSafety": {
     "unavailableInventory": "fail-closed",
-    "localSession": "protect-unless-authorized"
+    "localSession": "protect-unless-authorized",
+    "prepareDecision": {
+      "noLocalSession": "continue",
+      "dedicatedLocalSession": "refuse",
+      "hybridLocalSessionWithoutAuthorization": "refuse",
+      "hybridLocalSessionWithAuthorization": "evict"
+    }
+  },
+  "prepareCleanup": {
+    "requiredCategories": ["temporary", "application-cache", "downloads", "scratch", "recent-items"],
+    "preserveCategories": ["managed-application-configuration"]
+  },
+  "localMode": {
+    "malformedLegacyMarker": "active-until-explicit-clear",
+    "expiredLegacyTimestamp": "inactive"
+  },
+  "leaseExpiry": {
+    "unexpiredLease": "retain",
+    "expiredLease": "release-once"
+  },
+  "operationStatus": {
+    "missingOperation": "not-found",
+    "persistedOperation": "return-record"
   },
   "power": {
     "action": "shutdown",
@@ -60,10 +89,21 @@
       }
     },
     {
+      "id": "status.summary-matches-primary-readiness",
+      "windows": {
+        "file": "labstation/tests/TelemetryTests.ahk",
+        "test": "TestPortableSummaryTracksPrimaryReadiness"
+      },
+      "linux": {
+        "file": "internal/agent/agent_test.go",
+        "test": "TestStatusSummaryTracksPrimaryCapability"
+      }
+    },
+    {
       "id": "sessions.unavailable-inventory-fails-closed",
       "windows": {
-        "file": "labstation/tests/SessionGuardTests.ahk",
-        "test": "TestSessionQueryFailureIsReported"
+        "file": "labstation/tests/ReservationFlowTests.ahk",
+        "test": "TestPrepareSessionFailsClosedWhenSessionInventoryUnavailable"
       },
       "linux": {
         "file": "internal/agent/agent_test.go",
@@ -73,12 +113,34 @@
     {
       "id": "sessions.protect-local-user-unless-authorized",
       "windows": {
-        "file": "labstation/tests/SessionGuardTests.ahk",
-        "test": "TestNoConflictingSessionsDoesNotWaitOrLogoff"
+        "file": "labstation/tests/ReservationFlowTests.ahk",
+        "test": "TestPrepareLocalSessionPolicyMatchesSharedMatrix"
       },
       "linux": {
         "file": "internal/agent/agent_test.go",
-        "test": "TestPrepareSessionRefusesUnsafeProfilesAndReleasesHybridSessions"
+        "test": "TestPrepareLocalSessionPolicyMatchesSharedMatrix"
+      }
+    },
+    {
+      "id": "sessions.prepare-cleans-ephemeral-workspaces",
+      "windows": {
+        "file": "labstation/tests/ReservationFlowTests.ahk",
+        "test": "TestPrepareCleanupClearsSharedEphemeralCategories"
+      },
+      "linux": {
+        "file": "internal/agent/session_cleanup_test.go",
+        "test": "TestPrepareCleanupClearsSharedEphemeralCategories"
+      }
+    },
+    {
+      "id": "local-mode.malformed-marker-fails-closed",
+      "windows": {
+        "file": "labstation/tests/TelemetryTests.ahk",
+        "test": "TestLocalModeMarkerPolicyMatchesSharedMatrix"
+      },
+      "linux": {
+        "file": "internal/agent/agent_test.go",
+        "test": "TestLocalModeMarkerPolicyMatchesSharedMatrix"
       }
     },
     {
@@ -134,6 +196,28 @@
       "linux": {
         "file": "internal/agent/agent_test.go",
         "test": "TestOperationRecordsAndAtomicArtifactsStayInsideStateDirectory"
+      }
+    },
+    {
+      "id": "leases.expiry-watchdog-releases-once",
+      "windows": {
+        "file": "labstation/tests/LeaseDispatcherTests.ahk",
+        "test": "TestLeaseExpiryWatchdogReleasesExpiredLease"
+      },
+      "linux": {
+        "file": "internal/agent/lease_dispatch_test.go",
+        "test": "TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease"
+      }
+    },
+    {
+      "id": "operations.status-reconciles-persisted-result",
+      "windows": {
+        "file": "labstation/tests/LeaseDispatcherTests.ahk",
+        "test": "TestOperationStatusReturnsPersistedResult"
+      },
+      "linux": {
+        "file": "internal/agent/lease_dispatch_test.go",
+        "test": "TestDispatchV2OperationStatusReturnsPersistedResult"
       }
     }
   ]

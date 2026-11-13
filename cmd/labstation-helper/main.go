@@ -114,7 +114,7 @@ func requestOperationClass(operation string) string {
 	switch operation {
 	case "lease-admission":
 		return "admission"
-	case "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "secret-set", "secret-clear", "secret-status", "labuser-password-status":
+	case "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "fmu-clean-temp", "secret-set", "secret-clear", "secret-status", "labuser-password-status":
 		return "control"
 	default:
 		return ""
@@ -155,7 +155,7 @@ func helperOperationBudget(operation string) time.Duration {
 	switch operation {
 	case "terminate-session":
 		return 25 * time.Second
-	case "service-action", "secret-set", "secret-clear":
+	case "service-action", "fmu-clean-temp", "secret-set", "secret-clear":
 		return 90 * time.Second
 	case "power-shutdown", "power-hibernate", "power-reboot":
 		return 30 * time.Second
@@ -237,6 +237,8 @@ func executeWithContext(ctx context.Context, request request) error {
 			return runApprovedCommand(ctx, []string{rcServiceBinary, "/sbin/rc-service", "/usr/bin/rc-service"}, strings.TrimSuffix(request.Unit, ".service"), request.Action)
 		}
 		return runSystemctl(ctx, request.Action, request.Unit)
+	case "fmu-clean-temp":
+		return cleanFMUTemporaryState(ctx)
 	case "secret-set":
 		if request.SecretID != "fmu-internal-token" || !secretValue.MatchString(request.SecretValue) {
 			return errors.New("secret is not valid")
@@ -258,6 +260,45 @@ func executeWithContext(ctx context.Context, request request) error {
 	default:
 		return errors.New("operation is not allowlisted")
 	}
+}
+
+func cleanFMUTemporaryState(ctx context.Context) error {
+	root := "/var/lib/decentralabs/fmu-executor/fmu-data"
+	for _, path := range []string{
+		"/var/lib",
+		"/var/lib/decentralabs",
+		"/var/lib/decentralabs/fmu-executor",
+		root,
+	} {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return errors.New("FMU data path is not a managed directory")
+		}
+	}
+	temporary := filepath.Join(root, ".tmp")
+	info, err := os.Lstat(temporary)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("FMU temporary path is not a managed directory")
+	}
+	entries, err := os.ReadDir(temporary)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(filepath.Join(temporary, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readSessionIdentity(ctx context.Context, id string) (map[string]string, error) {

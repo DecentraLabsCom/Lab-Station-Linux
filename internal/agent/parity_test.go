@@ -22,13 +22,16 @@ type parityTestScenario struct {
 }
 
 type portableStatusVector struct {
-	SchemaVersion         string   `json:"schemaVersion"`
-	RequiredFields        []string `json:"requiredFields"`
-	Profiles              []string `json:"profiles"`
-	SummaryStates         []string `json:"summaryStates"`
-	ReadinessCapabilities []string `json:"readinessCapabilities"`
-	SessionKinds          []string `json:"sessionKinds"`
-	SessionRequiredFields []string `json:"sessionRequiredFields"`
+	SchemaVersion              string            `json:"schemaVersion"`
+	RequiredFields             []string          `json:"requiredFields"`
+	Profiles                   []string          `json:"profiles"`
+	SummaryStates              []string          `json:"summaryStates"`
+	ReadinessCapabilities      []string          `json:"readinessCapabilities"`
+	SessionKinds               []string          `json:"sessionKinds"`
+	SessionRequiredFields      []string          `json:"sessionRequiredFields"`
+	PrimaryCapabilityByProfile map[string]string `json:"primaryCapabilityByProfile"`
+	ReadyState                 string            `json:"readyState"`
+	NotReadyStates             []string          `json:"notReadyStates"`
 }
 
 type parityPlatform struct {
@@ -42,9 +45,26 @@ type portableParityMatrix struct {
 	PortableStatus portableStatusVector      `json:"portableStatus"`
 	Platforms      map[string]parityPlatform `json:"platforms"`
 	SessionSafety  struct {
-		UnavailableInventory string `json:"unavailableInventory"`
-		LocalSession         string `json:"localSession"`
+		UnavailableInventory string            `json:"unavailableInventory"`
+		LocalSession         string            `json:"localSession"`
+		PrepareDecision      map[string]string `json:"prepareDecision"`
 	} `json:"sessionSafety"`
+	PrepareCleanup struct {
+		RequiredCategories []string `json:"requiredCategories"`
+		PreserveCategories []string `json:"preserveCategories"`
+	} `json:"prepareCleanup"`
+	LocalMode struct {
+		MalformedLegacyMarker  string `json:"malformedLegacyMarker"`
+		ExpiredLegacyTimestamp string `json:"expiredLegacyTimestamp"`
+	} `json:"localMode"`
+	LeaseExpiry struct {
+		UnexpiredLease string `json:"unexpiredLease"`
+		ExpiredLease   string `json:"expiredLease"`
+	} `json:"leaseExpiry"`
+	OperationStatus struct {
+		MissingOperation   string `json:"missingOperation"`
+		PersistedOperation string `json:"persistedOperation"`
+	} `json:"operationStatus"`
 	Power struct {
 		Action      string `json:"action"`
 		RequireWake bool   `json:"requireWake"`
@@ -136,6 +156,24 @@ func assertPortableStatusContract(t *testing.T, status map[string]any, platformN
 		t.Errorf("summary.state %v is outside the portable values %v", summary["state"], contract.SummaryStates)
 	}
 	readiness := parityObject(t, status, "readiness")
+	primaryName, ok := contract.PrimaryCapabilityByProfile[profile]
+	if !ok {
+		t.Errorf("profile %q has no primary readiness capability in the parity matrix", profile)
+	} else {
+		primary := parityObject(t, readiness, primaryName)
+		primaryReady, primaryReadyOK := primary["ready"].(bool)
+		summaryReady, summaryReadyOK := summary["ready"].(bool)
+		if !primaryReadyOK || !summaryReadyOK || summaryReady != primaryReady {
+			t.Errorf("summary.ready = %v, want readiness.%s.ready = %v", summary["ready"], primaryName, primary["ready"])
+		}
+		state := parityString(t, summary, "state")
+		if summaryReady && state != contract.ReadyState {
+			t.Errorf("ready summary.state = %q, want %q", state, contract.ReadyState)
+		}
+		if summaryReadyOK && !summaryReady && !containsParityValue(contract.NotReadyStates, state) {
+			t.Errorf("not-ready summary.state = %q, want one of %v", state, contract.NotReadyStates)
+		}
+	}
 	for _, capability := range contract.ReadinessCapabilities {
 		if _, ok := readiness[capability]; !ok {
 			t.Errorf("readiness is missing portable capability %q", capability)
@@ -175,7 +213,7 @@ func assertPortableStatusContract(t *testing.T, status map[string]any, platformN
 
 func TestPortableParityManifestReferencesImplementedTests(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
-	if matrix.Version != 1 || matrix.PortableStatus.SchemaVersion != "3.0.0" {
+	if matrix.Version != 2 || matrix.PortableStatus.SchemaVersion != "3.0.0" {
 		t.Fatalf("unexpected portable matrix version/contract: %#v", matrix)
 	}
 	if len(matrix.SharedScenarios) == 0 {

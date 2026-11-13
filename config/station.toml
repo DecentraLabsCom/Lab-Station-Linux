@@ -9,8 +9,8 @@ management_user = "labstation-ops"
 management_port = 22
 transport = "ssh"
 supervisor = "auto"
-guard_grace_seconds = 30
-allow_local_session_eviction = false
+guard_grace_seconds = 90
+allow_local_session_eviction = true
 
 [application]
 id = "lab-app"

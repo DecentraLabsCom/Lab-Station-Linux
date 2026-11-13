@@ -400,10 +400,12 @@ func localModeExpiry(raw []byte) time.Time {
 		if err == nil {
 			return expires
 		}
+		// An explicit but invalid expiry is not evidence that local mode ended.
 		return time.Time{}
 	}
 	created, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(raw)))
 	if err != nil {
+		// Marker-only and malformed legacy files stay active until explicit clear.
 		return time.Time{}
 	}
 	return created.Add(8 * time.Hour)
@@ -498,15 +500,17 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	if !sessionsOK {
 		return 2, "", "session inventory unavailable; refusing to prepare station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED"}
 	}
+	localSessionDecision := localSessionPrepareDecision(a.Config.Profile, len(local), a.Config.AllowLocalSessionEviction)
+	if localSessionDecision == "refuse" {
+		message := "unexpected local session on dedicated station"
+		if a.Config.Profile == "hybrid" {
+			message = "instructor session is active; local-session eviction is disabled"
+		}
+		return 2, "", message, map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": local}
+	}
 	notificationDelivered := false
 	notificationWarning := false
-	if len(local) > 0 {
-		if a.Config.Profile == "dedicated" {
-			return 2, "", "unexpected local session on dedicated station", map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": local}
-		}
-		if a.Config.Profile == "hybrid" && !a.Config.AllowLocalSessionEviction {
-			return 2, "", "instructor session is active; local-session eviction is disabled", map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": local}
-		}
+	if localSessionDecision == "evict" {
 		if !guardOptions.NoGuard && guardOptions.Notify {
 			if err := a.hostRuntime().NotifyLocalUsers(guardOptions.Message); err == nil {
 				notificationDelivered = true
@@ -515,8 +519,12 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 			}
 		}
 		if a.Config.Profile == "hybrid" {
-			if !guardOptions.NoGuard && guardOptions.GraceSeconds > 0 {
-				if err := waitGrace(ctx, guardOptions.GraceSeconds); err != nil {
+			if !guardOptions.NoGuard {
+				graceSeconds := guardOptions.GraceSeconds
+				if graceSeconds < 30 {
+					graceSeconds = 30
+				}
+				if err := waitGrace(ctx, graceSeconds); err != nil {
 					return 2, "", "session guard was cancelled", map[string]any{"code": "STATION_GUARD_CANCELLED"}
 				}
 			}
@@ -535,6 +543,10 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 					return 2, "", "unable to release instructor session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
 			}
+			remainingLocal, _, currentOK := a.hostRuntime().Sessions()
+			if !currentOK || len(remainingLocal) != 0 {
+				return 2, "", "local session inventory changed or a session remained active after release", map[string]any{"code": "STATION_SESSION_CHANGED"}
+			}
 		}
 	} else {
 		currentLocal, _, currentOK := a.hostRuntime().Sessions()
@@ -545,15 +557,40 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	if err := ctx.Err(); err != nil {
 		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
 	}
+	cleanupWarnings := []string{}
+	if a.Config.Profile != "fmu-only" {
+		if err := a.cleanFMUExecutorState(ctx); err != nil {
+			cleanupWarnings = append(cleanupWarnings, "FMU Executor state could not be fully cleaned")
+			a.log("prepare-cleanup-warning", map[string]any{"error": err.Error()})
+		}
+		if err := cleanTinyDeskWorkingData(); err != nil {
+			cleanupWarnings = append(cleanupWarnings, "Tiny Desk working data could not be fully cleaned")
+			a.log("prepare-cleanup-warning", map[string]any{"error": err.Error()})
+		}
+	}
 	_ = os.MkdirAll(a.Config.StateDir, 0750)
-	a.appendEvent(map[string]any{"kind": "prepare-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "sessionsReleased": len(local), "notificationDelivered": notificationDelivered})
+	a.appendEvent(map[string]any{"kind": "prepare-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "sessionsReleased": len(local), "notificationDelivered": notificationDelivered, "cleanupWarnings": cleanupWarnings})
 	code := 0
 	message := "station prepared"
 	if notificationWarning {
 		code = 1
 		message = "station prepared; session notification could not be delivered"
 	}
-	return code, message, "", map[string]any{"profile": a.Config.Profile, "releasedSessions": len(local), "notificationDelivered": notificationDelivered}
+	if len(cleanupWarnings) > 0 {
+		code = 1
+		message = "station prepared with cleanup warnings"
+	}
+	return code, message, "", map[string]any{"profile": a.Config.Profile, "releasedSessions": len(local), "notificationDelivered": notificationDelivered, "cleanupWarnings": cleanupWarnings}
+}
+
+func localSessionPrepareDecision(profile string, localSessionCount int, allowEviction bool) string {
+	if localSessionCount <= 0 {
+		return "continue"
+	}
+	if profile == "hybrid" && allowEviction {
+		return "evict"
+	}
+	return "refuse"
 }
 
 func (a *Agent) release(ctx context.Context, args []string) (int, string, string, map[string]any) {

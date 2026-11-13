@@ -103,6 +103,7 @@ func TestDispatchV2LeaseJournalIsDurableIdempotentAndRejectsStaleRelease(t *test
 }
 
 func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing.T) {
+	matrix := loadPortableParityMatrix(t)
 	now := time.Now().UTC()
 	lease := leaseRecord{State: "active", NotBefore: now.Add(-time.Minute).Format(time.RFC3339Nano), ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano)}
 	if err := checkLeaseWindow(lease, now); err != nil {
@@ -121,8 +122,8 @@ func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing
 	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "opaque-rdp-7", "user": "labuser", "remote": true, "seat": "", "type": "x11"}}}
 	a, calls := newTestAgent(t, "dedicated", runtime)
 	now = time.Now().UTC()
-	expired := leaseRecord{LeaseID: "lease-expired", Kind: "reservation", Generation: 7, State: "active", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano), ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano)}
-	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 7, Active: &expired, Operations: map[string]leaseOperation{}}); err != nil {
+	unexpired := leaseRecord{LeaseID: "lease-not-expired", Kind: "reservation", Generation: 6, State: "active", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano), ExpiresAt: now.Add(time.Hour).Format(time.RFC3339Nano)}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 6, Active: &unexpired, Operations: map[string]leaseOperation{}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
@@ -132,11 +133,66 @@ func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Active != nil || state.LastReleased == nil || state.LastReleased.Generation != 7 || state.LastReleased.State != "expired" {
+	if matrix.LeaseExpiry.UnexpiredLease != "retain" || state.Active == nil || len(*calls) != 0 {
+		t.Fatalf("watchdog changed an unexpired lease: policy=%q state=%#v helper=%#v", matrix.LeaseExpiry.UnexpiredLease, state.Active, *calls)
+	}
+
+	expired := leaseRecord{LeaseID: "lease-expired", Kind: "reservation", Generation: 7, State: "active", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano), ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano)}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 7, Active: &expired, Operations: map[string]leaseOperation{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err = loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matrix.LeaseExpiry.ExpiredLease != "release-once" || state.Active != nil || state.LastReleased == nil || state.LastReleased.Generation != 7 || state.LastReleased.State != "expired" {
 		t.Fatalf("watchdog did not persist cleanup and generation: %#v", state)
 	}
 	if len(*calls) != 1 || (*calls)[0]["operation"] != "terminate-session" || (*calls)[0]["sessionId"] != "opaque-rdp-7" {
 		t.Fatalf("watchdog did not terminate only the active Tiny Desk session: %#v", *calls)
+	}
+}
+
+func TestDispatchV2OperationStatusReturnsPersistedResult(t *testing.T) {
+	matrix := loadPortableParityMatrix(t)
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	a.Config = cfg
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	prepared := dispatchTestRequest(t, a, v2LeaseRequest("status-prepare", "prepare-session", "lease-status", 0, now, now.Add(time.Minute), expires))
+	if prepared.ExitCode >= 2 {
+		t.Fatalf("prepare operation was refused before it could be journaled: %#v", prepared)
+	}
+	sideEffectsAfterPrepare := len(*calls)
+
+	status := dispatchTestRequest(t, a, `{"schemaVersion":2,"id":"status-query","operation":"operation.status","operationId":"status-prepare"}`)
+	var operation map[string]any
+	if err := json.Unmarshal([]byte(status.Stdout), &operation); err != nil {
+		t.Fatalf("decode persisted operation: %v; result=%#v", err, status)
+	}
+	if matrix.OperationStatus.PersistedOperation != "return-record" || operation["state"] != "completed" {
+		t.Fatalf("operation.status did not return the completed journal record: %#v", operation)
+	}
+	result, ok := operation["result"].(map[string]any)
+	if !ok || result["exitCode"] != float64(prepared.ExitCode) || len(*calls) != sideEffectsAfterPrepare {
+		t.Fatalf("operation.status omitted its durable result or repeated side effects: operation=%#v calls=%#v", operation, *calls)
+	}
+
+	missing := dispatchTestRequest(t, a, `{"schemaVersion":2,"id":"status-missing","operation":"operation.status","operationId":"missing-operation"}`)
+	if matrix.OperationStatus.MissingOperation != "not-found" || missing.ExitCode != 1 || missing.Metadata["state"] != "not-found" {
+		t.Fatalf("missing operation status differs from shared not-found behavior: %#v", missing)
+	}
+	if len(*calls) != sideEffectsAfterPrepare {
+		t.Fatalf("missing status lookup caused a side effect: %#v", *calls)
 	}
 }
 

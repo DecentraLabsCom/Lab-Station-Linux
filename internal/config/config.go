@@ -54,7 +54,7 @@ func Defaults() Config {
 		ManagementUser: "labstation-ops", ManagementPort: 22, Transport: "ssh", Supervisor: "auto",
 		GuardGraceSeconds:         90,
 		AllowLocalSessionEviction: true,
-		Application:       Application{ID: "lab-app", User: "labuser", CloseTimeoutSeconds: 15},
+		Application:               Application{ID: "lab-app", User: "labuser", CloseTimeoutSeconds: 15},
 	}
 }
 
@@ -75,7 +75,7 @@ func Load(path string) (Config, error) {
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "[[") && strings.HasSuffix(line, "]]" ) {
+		if strings.HasPrefix(line, "[[") && strings.HasSuffix(line, "]]") {
 			section = strings.TrimSpace(line[2 : len(line)-2])
 			if section != "application.apps" {
 				return cfg, fmt.Errorf("station.toml:%d: unsupported array table %s", lineNo, section)

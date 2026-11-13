@@ -1,6 +1,9 @@
 # Changelog
 
-## [0.4.0] - 2026-10-19
+## [0.4.0] - 2026-11-13
+
+### Fixed
+- Correct the pinned FMU Executor runtime and Smart Warehouse app digests so release bundles validate against the pinned source.
 
 ### Added
 - Include the Linux x64 Smart Warehouse FMU, companion GLB and Three.js app in

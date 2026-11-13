@@ -102,6 +102,29 @@ and `arm64`. Packaging, signing, verification, installation, and rollback
 instructions are in [Linux release packaging](packaging/README.md). The
 release remains a prerelease until the platform support matrix is certified.
 
+### Run Go tests from Windows
+
+The Go packages use Linux system calls, so run them through Docker Desktop's
+Linux engine rather than the native Windows Go toolchain. From PowerShell:
+
+```powershell
+.\scripts\test-go.ps1
+```
+
+The script reads the pinned sibling Git checkout at `..\FMU-Executor`, archives
+the exact revision pinned by Lab Station inside the container, and runs
+`go test -race -cover ./...`. Archiving the Git revision preserves canonical
+file bytes even when Windows has converted line endings in the working tree.
+To use a checkout in another location, pass its path:
+
+```powershell
+.\scripts\test-go.ps1 -FmuExecutorSource 'D:\work\FMU-Executor'
+```
+
+Docker Desktop must be running with Linux containers enabled. The
+[`build.yml`](.github/workflows/build.yml) CI workflow already runs the Go test
+suite on Ubuntu for Go 1.23 and the current stable release.
+
 ## Documentation
 
 | Topic | Guide |

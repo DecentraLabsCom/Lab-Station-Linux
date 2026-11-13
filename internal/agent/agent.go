@@ -24,12 +24,13 @@ import (
 )
 
 type Agent struct {
-	Config       config.Config
-	Runtime      host.Runtime
-	runHelper    func(context.Context, []byte) error
-	rebootMarker func() bool
-	secretProbe  func() bool
-	mu           sync.Mutex
+	Config        config.Config
+	Runtime       host.Runtime
+	runHelper     func(context.Context, []byte) error
+	cleanWorkData func() error
+	rebootMarker  func() bool
+	secretProbe   func() bool
+	mu            sync.Mutex
 }
 
 type Result struct {
@@ -563,7 +564,11 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 			cleanupWarnings = append(cleanupWarnings, "FMU Executor state could not be fully cleaned")
 			a.log("prepare-cleanup-warning", map[string]any{"error": err.Error()})
 		}
-		if err := cleanTinyDeskWorkingData(); err != nil {
+		cleanWorkData := a.cleanWorkData
+		if cleanWorkData == nil {
+			cleanWorkData = cleanTinyDeskWorkingData
+		}
+		if err := cleanWorkData(); err != nil {
 			cleanupWarnings = append(cleanupWarnings, "Tiny Desk working data could not be fully cleaned")
 			a.log("prepare-cleanup-warning", map[string]any{"error": err.Error()})
 		}

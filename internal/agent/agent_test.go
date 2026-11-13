@@ -83,15 +83,35 @@ func newTestAgent(t *testing.T, profile string, runtime *fakeRuntime) (*Agent, *
 	cfg.Name = "station-test"
 	cfg.Profile = profile
 	cfg.GuardGraceSeconds = 0
-	cfg.StateDir = t.TempDir()
+	stationRoot := t.TempDir()
+	cfg.StateDir = filepath.Join(stationRoot, "data")
+	if err := os.MkdirAll(cfg.StateDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	workHome := filepath.Join(stationRoot, "tiny-desk-home")
+	if err := os.MkdirAll(workHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	calls := &[]map[string]any{}
 	a := &Agent{Config: cfg, Runtime: runtime}
+	a.cleanWorkData = func() error { return cleanTinyDeskWorkingDataAt(workHome, stationRoot) }
 	a.runHelper = func(_ context.Context, raw []byte) error {
 		var request map[string]any
 		if err := json.Unmarshal(raw, &request); err != nil {
 			return err
 		}
 		*calls = append(*calls, request)
+		if request["operation"] == "terminate-session" {
+			if sessionID, ok := request["sessionId"].(string); ok {
+				remaining := runtime.local[:0]
+				for _, session := range runtime.local {
+					if session["id"] != sessionID {
+						remaining = append(remaining, session)
+					}
+				}
+				runtime.local = remaining
+			}
+		}
 		return nil
 	}
 	return a, calls
@@ -330,9 +350,9 @@ func TestPrepareSessionRefusesUnsafeProfilesAndReleasesHybridSessions(t *testing
 	}
 
 	a.Config.AllowLocalSessionEviction = true
-	result = a.Execute(context.Background(), "prepare-3", "prepare-session", []string{"--guard-grace=0", "--guard-notify=false"})
+	result = a.Execute(context.Background(), "prepare-3", "prepare-session", []string{"--no-guard"})
 	if result.ExitCode != 0 || len(*calls) != 1 || (*calls)[0]["operation"] != "terminate-session" || (*calls)[0]["sessionId"] != "local-1" {
-		t.Fatalf("authorized hybrid preparation should notify helper exactly once: result=%#v helper=%#v", result, *calls)
+		t.Fatalf("authorized hybrid preparation should invoke the termination helper exactly once: result=%#v helper=%#v", result, *calls)
 	}
 }
 

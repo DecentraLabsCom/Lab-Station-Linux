@@ -210,6 +210,18 @@ sudo labstationctl local-mode set --ttl=28800
 sudo labstationctl local-mode clear
 ```
 
+Enable local mode only on a `hybrid` station, with a successful session
+inventory and no active reservation or remote lab-user session; it marks
+exclusive instructor use and expires after eight hours by default. `clear`
+remains available on any profile to remove a stale flag. `Prepare` and `Release` are supported only for
+`dedicated` and `hybrid` physical stations. Prepare rejects local mode and an
+unexpected user on a dedicated station. On hybrid, it warns and evicts a local
+session after the 90-second Gateway grace period by default. New Linux setups
+enable `station.allow_local_session_eviction` to match Windows hybrid behavior;
+set it to `false` to make Prepare fail safely without terminating an instructor
+session. Release closes only the managed remote `labuser` session and is
+rejected while a reservation or demo lease is active.
+
 Before changing energy or reboot state, inspect the report and make sure no
 active user or FMU work would be interrupted:
 
@@ -217,6 +229,13 @@ active user or FMU work would be interrupted:
 sudo labstationctl energy audit
 sudo labstationctl recovery reboot-if-needed
 ```
+
+Gateway shutdown requests use `power shutdown --delay=60 --require-idle`. Windows
+and Linux Stations follow the same guard: the Gateway checks the advertised
+capability, local mode, and session inventory before dispatch; the Station
+checks local mode and sessions before and after the countdown. It cancels
+shutdown if local mode is enabled, the inventory is unavailable, or a user
+session is active at either check.
 
 If Gateway reports a host-key mismatch, stop remote actions and compare the
 fingerprint through the trusted console before changing the pin. If lease state,

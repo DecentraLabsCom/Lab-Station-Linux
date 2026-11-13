@@ -52,7 +52,8 @@ func Defaults() Config {
 		ConfigDir:      "/etc/decentralabs/lab-station",
 		LogDir:         "/var/log/decentralabs/lab-station",
 		ManagementUser: "labstation-ops", ManagementPort: 22, Transport: "ssh", Supervisor: "auto",
-		GuardGraceSeconds: 30,
+		GuardGraceSeconds:         90,
+		AllowLocalSessionEviction: true,
 		Application:       Application{ID: "lab-app", User: "labuser", CloseTimeoutSeconds: 15},
 	}
 }

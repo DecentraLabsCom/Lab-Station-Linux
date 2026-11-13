@@ -298,6 +298,37 @@ func (a *Agent) executeLeaseRequest(parent context.Context, request Request) Res
 	return result
 }
 
+// executeOperatorPrepare serializes the unscoped operator prepare against
+// reservation lease operations. Reservation-bound prepare uses dispatcher v2.
+func (a *Agent) executeOperatorPrepare(ctx context.Context, request Request) Result {
+	if err := ValidateCommand("prepare-session", request.Args); err != nil {
+		return leaseErrorResult(request, "STATION_COMMAND_REJECTED", err.Error())
+	}
+	operationLock, err := lockLeaseOperation(a.Config.StateDir, request.ID, true)
+	if errors.Is(err, errLeaseOperationInProgress) {
+		return leaseErrorResult(request, "STATION_OPERATION_IN_PROGRESS", "operation is still being processed")
+	}
+	if err != nil {
+		return leaseErrorResult(request, "STATION_JOURNAL_UNAVAILABLE", "operation journal is unavailable")
+	}
+	defer unlockState(operationLock)
+
+	journalLock, err := lockLeaseJournal(a.Config.StateDir)
+	if err != nil {
+		return leaseErrorResult(request, "STATION_JOURNAL_UNAVAILABLE", "operation journal is unavailable")
+	}
+	defer unlockState(journalLock)
+
+	state, err := loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		return leaseErrorResult(request, "STATION_JOURNAL_UNAVAILABLE", "operation journal is unavailable")
+	}
+	if state.Active != nil {
+		return leaseErrorResult(request, "STATION_LEASE_CONFLICT", "an active lease must be prepared through its reservation flow")
+	}
+	return a.Execute(ctx, request.ID, "prepare-session", request.Args)
+}
+
 // executeOperatorRelease serializes the no-lease cleanup exposed through the
 // trusted station-management channel against reservation lease operations.
 // Lease-bound release continues to use dispatcher protocol 2.

@@ -168,7 +168,10 @@ func ValidateCommand(command string, args []string) error {
 			return errors.New("power action is not allowlisted")
 		}
 		optionArgs = args[1:]
-		validOption = map[string]bool{"--delay": true, "--reason": true, "--require-wake": true}
+		validOption = map[string]bool{
+			"--delay": true, "--reason": true,
+			"--require-wake": true, "--require-idle": true,
+		}
 	case "recovery reboot-if-needed":
 		validOption = map[string]bool{"--force": true, "--timeout": true, "--reason": true}
 	case "local-mode":
@@ -213,6 +216,12 @@ func ValidateCommand(command string, args []string) error {
 		key := strings.SplitN(arg, "=", 2)[0]
 		if !strings.HasPrefix(arg, "--") || !validOption[key] {
 			return errors.New("command argument is not allowlisted")
+		}
+		if command == "power" && key == "--require-idle" {
+			_, _, hasValue := strings.Cut(arg, "=")
+			if args[0] != "shutdown" || hasValue {
+				return errors.New("--require-idle only applies to shutdown and takes no value")
+			}
 		}
 		if command == "session guard" && key == "--user" {
 			_, value, hasValue := strings.Cut(arg, "=")
@@ -318,7 +327,7 @@ func (a *Agent) Status() map[string]any {
 	active = append(active, remoteSessions...)
 	status := map[string]any{
 		"schemaVersion": "3.0.0", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "host": a.Config.Name, "version": a.Config.Version,
-		"platform":     map[string]any{"os": "linux", "distro": distro, "distroVersion": distroVersion, "arch": architecture(), "kernel": platform.KernelRelease(), "init": initName, "capabilities": []string{"ssh-dispatcher", "dispatcher-v1", "dispatcher-v2", "reservation-lease-v1", "operation-status-v1", "status-v3", "heartbeat", "local-mode", "power"}},
+		"platform":     map[string]any{"os": "linux", "distro": distro, "distroVersion": distroVersion, "arch": architecture(), "kernel": platform.KernelRelease(), "init": initName, "capabilities": []string{"ssh-dispatcher", "dispatcher-v1", "dispatcher-v2", "reservation-lease-v1", "operation-status-v1", "status-v3", "heartbeat", "local-mode", "power", "power-idle-guard-v1"}},
 		"profile":      a.Config.Profile,
 		"management":   map[string]any{"transport": "ssh", "port": a.Config.ManagementPort, "ready": serviceState(supervisor, "ssh.service") == "active" || serviceState(supervisor, "sshd.service") == "active", "dispatcher": true},
 		"remoteAccess": map[string]any{"mode": remoteMode, "backend": "xrdp-xorg", "available": physicalAvailable, "ready": remoteReady, "issues": physicalIssues, "applicationId": a.Config.Application.ID, "user": a.Config.Application.User},
@@ -430,6 +439,9 @@ func (a *Agent) localMode(action string, args []string) (int, string, string, ma
 		}
 		return 0, "local mode cleared", "", nil
 	}
+	if a.Config.Profile != "hybrid" {
+		return 2, "", "local mode is only supported by the hybrid profile", map[string]any{"code": "STATION_PROFILE_UNSUPPORTED"}
+	}
 	ttl := 8 * time.Hour
 	if len(args) > 0 {
 		if !strings.HasPrefix(args[0], "--ttl=") {
@@ -440,6 +452,25 @@ func (a *Agent) localMode(action string, args []string) (int, string, string, ma
 			return 2, "", "local-mode TTL must be between 60 and 86400 seconds", map[string]any{"code": "STATION_COMMAND_REJECTED"}
 		}
 		ttl = time.Duration(seconds) * time.Second
+	}
+	leaseLock, err := lockLeaseJournal(a.Config.StateDir)
+	if err != nil {
+		return 2, "", "reservation state is unavailable; local mode was not enabled", map[string]any{"code": "STATION_JOURNAL_UNAVAILABLE"}
+	}
+	defer unlockState(leaseLock)
+	leaseState, err := loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		return 2, "", "reservation state is unavailable; local mode was not enabled", map[string]any{"code": "STATION_JOURNAL_UNAVAILABLE"}
+	}
+	if leaseState.Active != nil {
+		return 2, "", "an active reservation prevents enabling local mode", map[string]any{"code": "STATION_LEASE_CONFLICT"}
+	}
+	_, remoteSessions, sessionsOK := a.hostRuntime().Sessions()
+	if !sessionsOK {
+		return 2, "", "session inventory unavailable; local mode was not enabled", map[string]any{"code": "STATION_SESSION_QUERY_FAILED"}
+	}
+	if hasLabUserRemote(remoteSessions) {
+		return 2, "", "an active remote lab-user session prevents enabling local mode", map[string]any{"code": "STATION_REMOTE_SESSION_ACTIVE"}
 	}
 	now := time.Now().UTC()
 	expires := now.Add(ttl)
@@ -528,6 +559,9 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 func (a *Agent) release(ctx context.Context, args []string) (int, string, string, map[string]any) {
 	if err := ctx.Err(); err != nil {
 		return 2, "", "session release was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
+	}
+	if a.Config.Profile == "fmu-only" {
+		return 2, "", "profile does not support a physical laboratory session", map[string]any{"code": "STATION_PROFILE_UNSUPPORTED"}
 	}
 	reboot := false
 	rebootTimeout := 0
@@ -790,6 +824,7 @@ func (a *Agent) power(ctx context.Context, args []string) (int, string, string, 
 	delay := 0
 	reason := "requested by Lab Gateway"
 	requireWake := false
+	requireIdle := false
 	for _, arg := range args[1:] {
 		key, value, hasValue := strings.Cut(arg, "=")
 		switch key {
@@ -812,16 +847,32 @@ func (a *Agent) power(ctx context.Context, args []string) (int, string, string, 
 			if hasValue && value != "true" && value != "false" {
 				return 2, "", "--require-wake must be true or false", map[string]any{"code": "STATION_COMMAND_REJECTED"}
 			}
+		case "--require-idle":
+			if hasValue || action != "shutdown" {
+				return 2, "", "--require-idle is only supported for shutdown", map[string]any{
+					"code": "STATION_COMMAND_REJECTED",
+				}
+			}
+			requireIdle = true
 		default:
 			return 2, "", "power option is not allowlisted", map[string]any{"code": "STATION_COMMAND_REJECTED"}
 		}
 	}
 	platform := a.hostRuntime()
-	interfaces := platform.NetworkInterfaces()
-	wakeSupported, wakeEnabled := platform.WakeStatus(interfaces)
-	wakePersistent := platform.WakePersistent(interfaces)
-	if requireWake && (!wakeSupported || !wakeEnabled || !wakePersistent) {
-		return 2, "", "Wake-on-LAN is not enabled persistently on a supported interface", map[string]any{"code": "STATION_WAKE_NOT_READY"}
+	if requireWake {
+		interfaces := platform.NetworkInterfaces()
+		wakeSupported, wakeEnabled := platform.WakeStatus(interfaces)
+		wakePersistent := platform.WakePersistent(interfaces)
+		if !wakeSupported || !wakeEnabled || !wakePersistent {
+			return 2, "", "Wake-on-LAN is not enabled persistently on a supported interface", map[string]any{"code": "STATION_WAKE_NOT_READY"}
+		}
+	}
+	if requireIdle {
+		if reason := a.shutdownIdleBlockReason(platform); reason != "" {
+			return 2, "", "shutdown blocked: " + reason, map[string]any{
+				"code": "STATION_SHUTDOWN_BLOCKED", "reason": reason,
+			}
+		}
 	}
 	if delay > 0 {
 		timer := time.NewTimer(time.Duration(delay) * time.Second)
@@ -831,6 +882,19 @@ func (a *Agent) power(ctx context.Context, args []string) (int, string, string, 
 			return 2, "", "power action cancelled", map[string]any{"code": "STATION_POWER_CANCELLED"}
 		case <-timer.C:
 		}
+	}
+	if requireIdle {
+		if reason := a.shutdownIdleBlockReason(platform); reason != "" {
+			return 2, "", "shutdown blocked: " + reason, map[string]any{
+				"code": "STATION_SHUTDOWN_BLOCKED", "reason": reason,
+			}
+		}
+	}
+	interfaces := platform.NetworkInterfaces()
+	wakeSupported, wakeEnabled := platform.WakeStatus(interfaces)
+	wakePersistent := platform.WakePersistent(interfaces)
+	if requireWake && (!wakeSupported || !wakeEnabled || !wakePersistent) {
+		return 2, "", "Wake-on-LAN is not enabled persistently on a supported interface", map[string]any{"code": "STATION_WAKE_NOT_READY"}
 	}
 	operation := "power-" + action
 	if err := a.helper(ctx, map[string]any{"operation": operation}); err != nil {
@@ -845,6 +909,28 @@ func (a *Agent) power(ctx context.Context, args []string) (int, string, string, 
 		code = 1
 	}
 	return code, action + " requested", "", map[string]any{"action": action, "requested": true, "reason": reason, "delaySeconds": delay, "wakeReady": wakeSupported && wakeEnabled && wakePersistent, "warning": warning}
+}
+
+func (a *Agent) shutdownIdleBlockReason(platform host.Runtime) string {
+	if a.localModeEnabled() {
+		return "local mode is active"
+	}
+	localSessions, remoteSessions, sessionsOK := platform.Sessions()
+	if !sessionsOK {
+		return "session inventory is unavailable"
+	}
+	for _, sessions := range [][]map[string]any{localSessions, remoteSessions} {
+		for _, session := range sessions {
+			active, ok := session["active"].(bool)
+			if !ok {
+				return "session inventory is invalid"
+			}
+			if active && session["kind"] != "management" && session["kind"] != "service" {
+				return "a user session is active"
+			}
+		}
+	}
+	return ""
 }
 
 func (a *Agent) recovery(ctx context.Context, args []string) (int, string, string, map[string]any) {

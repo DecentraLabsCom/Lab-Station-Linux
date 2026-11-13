@@ -69,6 +69,8 @@ systemctl reload ssh.service 2>/dev/null || systemctl reload sshd.service 2>/dev
 rm -f /etc/sudoers.d/decentralabs-lab-station
 rm -f /var/lib/labstation-ops/.ssh/authorized_keys
 XRDP_RESTART=0
+XRDP_SESMAN_RESTORED=0
+XRDP_SHIMS_REMOVABLE=0
 if [ -f /etc/xrdp/xrdp.ini.decentralabs-lab-station.bak ]; then
     MARKER=/etc/xrdp/xrdp.ini.decentralabs-lab-station.sha256
     if [ -f "$MARKER" ] && [ "$(sha256sum /etc/xrdp/xrdp.ini | awk '{print $1}')" = "$(cat "$MARKER")" ]; then
@@ -85,12 +87,25 @@ if [ -f /etc/xrdp/sesman.ini.decentralabs-lab-station.bak ]; then
         cp -p /etc/xrdp/sesman.ini.decentralabs-lab-station.bak /etc/xrdp/sesman.ini
         rm -f /etc/xrdp/sesman.ini.decentralabs-lab-station.bak "$MARKER"
         XRDP_RESTART=1
+        XRDP_SESMAN_RESTORED=1
     else
         echo 'sesman.ini changed after setup; preserved the live file and its backup for manual reconciliation.' >&2
     fi
 fi
 if [ "$XRDP_RESTART" = 1 ]; then
+    if [ "$XRDP_SESMAN_RESTORED" = 1 ]; then
+        if systemctl restart xrdp-sesman.service 2>/dev/null || rc-service xrdp-sesman restart 2>/dev/null; then
+            XRDP_SHIMS_REMOVABLE=1
+        else
+            echo 'Could not restart xrdp-sesman; preserving XRDP startup shims for manual reconciliation.' >&2
+        fi
+    fi
     systemctl restart xrdp.service 2>/dev/null || rc-service xrdp restart 2>/dev/null || true
+fi
+if [ "$XRDP_SHIMS_REMOVABLE" = 1 ]; then
+    managed_remove /usr/lib/decentralabs/lab-station/xrdp-auth-bin/xauth
+    managed_remove /usr/lib/decentralabs/lab-station/xrdp-xorg
+    rmdir /usr/lib/decentralabs/lab-station/xrdp-auth-bin 2>/dev/null || true
 fi
 rm -f /usr/bin/labstationctl /usr/bin/labstationd
 rm -f /usr/lib/decentralabs/lab-station/labstation-dispatcher /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin /usr/lib/decentralabs/lab-station/labstation-helper-bin
@@ -108,10 +123,13 @@ managed_remove "$SESSION_HOME/.xsession"
 if [ "$(readlink "$SESSION_HOME/.xsession-errors" 2>/dev/null || true)" = /var/lib/decentralabs/lab-station/tiny-desk-home/.xsession-errors ]; then
     rm -f "$SESSION_HOME/.xsession-errors"
 fi
+if [ "$XRDP_SHIMS_REMOVABLE" = 1 ] && [ "$(readlink "$SESSION_HOME/.Xauthority" 2>/dev/null || true)" = /var/lib/decentralabs/lab-station/tiny-desk-home/.Xauthority ]; then
+    rm -f "$SESSION_HOME/.Xauthority"
+fi
 rmdir "$SESSION_HOME" 2>/dev/null || true
 if id labuser >/dev/null 2>&1; then
     mkdir -p /home/labuser
-    usermod --home-dir /home/labuser labuser
+    usermod --home /home/labuser labuser
 fi
 managed_remove /usr/share/decentralabs/lab-station/app-profile.json
 rm -rf /opt/decentralabs/fmu-executor /usr/share/decentralabs/lab-station/fmu-executor-source

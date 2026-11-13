@@ -270,7 +270,7 @@ func (a *Agent) Status() map[string]any {
 		physicalIssues = append(physicalIssues, "xrdp service is not active")
 	}
 	if physicalAvailable && !a.tinyDeskConfigurationReady() {
-		physicalIssues = append(physicalIssues, "Tiny Desk session or RDP policy is not ready; verify the labuser password and xrdp channel restrictions")
+		physicalIssues = append(physicalIssues, "Tiny Desk session or RDP policy is not ready; verify XRDP startup configuration, the labuser password and xrdp channel restrictions")
 	}
 	if physicalAvailable && !sessionsOK {
 		physicalIssues = append(physicalIssues, "login session inventory is unavailable")
@@ -1209,6 +1209,18 @@ func (a *Agent) tinyDeskConfigurationReady() bool {
 	if err != nil || errorLog != filepath.Join(tinyDeskWorkHome, ".xsession-errors") {
 		return false
 	}
+	authorityPath := filepath.Join(tinyDeskSessionHome, ".Xauthority")
+	authorityInfo, err := os.Lstat(authorityPath)
+	if err != nil || authorityInfo.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	if stat, ok := authorityInfo.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
+		return false
+	}
+	authorityTarget, err := os.Readlink(authorityPath)
+	if err != nil || authorityTarget != filepath.Join(tinyDeskWorkHome, ".Xauthority") {
+		return false
+	}
 	workInfo, err := os.Lstat(tinyDeskWorkHome)
 	if err != nil || !workInfo.IsDir() || workInfo.Mode()&os.ModeSymlink != 0 || workInfo.Mode().Perm() != 0700 {
 		return false
@@ -1265,23 +1277,18 @@ func (a *Agent) tinyDeskConfigurationReady() bool {
 	if err != nil {
 		return false
 	}
-	section = ""
-	authorityInSystemDir := false
-	for _, line := range strings.Split(string(sesman), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
-			continue
-		}
-		if section != "globals" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if ok && strings.EqualFold(strings.TrimSpace(key), "XAuthorityInSystemDir") {
-			authorityInSystemDir = strings.EqualFold(strings.TrimSpace(value), "yes")
-		}
+	transformed, originalXorg, originalPath, err := transformXrdpSesmanConfig(string(sesman))
+	if err != nil || transformed != string(sesman) || !xrdpSessionHasXauth(originalPath, tinyDeskSessionHome) {
+		return false
 	}
-	if !authorityInSystemDir {
+	idPath, err := xrdpIDExecutable()
+	if err != nil || !rootOwnedXrdpDirectory(tinyDeskXauthShimDir) || !rootOwnedXrdpDirectory(filepath.Dir(tinyDeskXorgShimPath)) {
+		return false
+	}
+	uid := uint32(userUID)
+	xauthContent := renderXrdpXauthShim(uid, idPath, originalPath, filepath.Join(tinyDeskWorkHome, ".Xauthority"))
+	xorgContent := renderXrdpXorgShim(uid, idPath, originalXorg, filepath.Join(tinyDeskWorkHome, ".xorgxrdp.%s.log"))
+	if !rootOwnedXrdpExecutable(filepath.Join(tinyDeskXauthShimDir, "xauth"), xauthContent) || !rootOwnedXrdpExecutable(tinyDeskXorgShimPath, xorgContent) {
 		return false
 	}
 	return a.hostRuntime().UserPasswordConfigured("labuser")

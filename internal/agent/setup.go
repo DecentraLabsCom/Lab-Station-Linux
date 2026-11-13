@@ -277,14 +277,14 @@ func installDependencies(profile string, withFMU bool) error {
 		switch manager {
 		case "apt":
 			if name == "debian" || name == "ubuntu" {
-				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "openbox")
+				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "xauth", "openbox")
 			}
 		case "dnf", "yum":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "openbox")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "xorg-x11-xauth", "openbox")
 		case "zypper":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "openbox")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "xauth", "openbox")
 		case "pacman":
-			packages = append(packages, "xrdp", "xorg-server", "openbox")
+			packages = append(packages, "xrdp", "xorg-server", "xorg-xauth", "openbox")
 		}
 	}
 	var command string
@@ -1112,9 +1112,6 @@ func installTinyDeskSession(cfg config.Config) error {
 	if err := configureTinyDeskRdp(); err != nil {
 		return err
 	}
-	if err := configureTinyDeskSesman(); err != nil {
-		return err
-	}
 	openboxConfigPath := "/usr/share/decentralabs/lab-station/tiny-desk-rc.xml"
 	if err := writeManagedConfig(openboxConfigPath, tinyDeskOpenboxConfig, 0644); err != nil {
 		return err
@@ -1129,7 +1126,7 @@ func installTinyDeskSession(cfg config.Config) error {
 		return err
 	} else {
 		for _, entry := range entries {
-			if !oneOf(entry.Name(), ".xsession", ".xsession.sha256", ".xsession-errors") {
+			if !oneOf(entry.Name(), ".xsession", ".xsession.sha256", ".xsession-errors", ".Xauthority") {
 				return fmt.Errorf("unexpected file in protected Tiny Desk home: %s", entry.Name())
 			}
 		}
@@ -1178,6 +1175,27 @@ func installTinyDeskSession(cfg config.Config) error {
 		return err
 	}
 	if err := os.Lchown(errorLog, 0, 0); err != nil {
+		return err
+	}
+	authorityLink := filepath.Join(tinyDeskSessionHome, ".Xauthority")
+	authorityTarget := filepath.Join(workHome, ".Xauthority")
+	if existing, err := os.Lstat(authorityLink); err == nil {
+		if existing.Mode()&os.ModeSymlink == 0 {
+			return errors.New("Tiny Desk Xauthority path is not the managed workspace symlink")
+		}
+		current, err := os.Readlink(authorityLink)
+		if err != nil || current != authorityTarget {
+			return errors.New("Tiny Desk Xauthority path was changed outside Lab Station")
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else if err := os.Symlink(authorityTarget, authorityLink); err != nil {
+		return err
+	}
+	if err := os.Lchown(authorityLink, 0, 0); err != nil {
+		return err
+	}
+	if err := configureTinyDeskSesman(); err != nil {
 		return err
 	}
 	return nil
@@ -1424,9 +1442,8 @@ func configureTinyDeskRdp() error {
 	return atomicWrite(marker, []byte(hex.EncodeToString(digest[:])+"\n"), 0600)
 }
 
-// xrdp-sesman keeps the Xauthority cookie under a system-owned runtime path.
-// That lets the session home remain root-owned so labuser cannot replace the
-// startup script or add Xsession startup hooks.
+// configureTinyDeskSesman keeps labuser's Xauthority and Xorg log writable
+// while preserving the original XRDP commands for other accounts.
 func configureTinyDeskSesman() error {
 	path := "/etc/xrdp/sesman.ini"
 	original, err := os.ReadFile(path)
@@ -1453,42 +1470,33 @@ func configureTinyDeskSesman() error {
 	} else if !os.IsNotExist(readErr) {
 		return readErr
 	}
-	lines := strings.Split(string(original), "\n")
-	section := ""
-	foundGlobals := false
-	seenAuthority := false
-	output := make([]string, 0, len(lines)+1)
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if strings.EqualFold(section, "Globals") && !seenAuthority {
-				output = append(output, "XAuthorityInSystemDir=yes")
-				seenAuthority = true
-			}
-			section = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
-			if strings.EqualFold(section, "Globals") {
-				foundGlobals = true
-			}
-			output = append(output, line)
-			continue
-		}
-		if strings.EqualFold(section, "Globals") && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, ";") {
-			key, _, ok := strings.Cut(trimmed, "=")
-			if ok && strings.EqualFold(strings.TrimSpace(key), "XAuthorityInSystemDir") {
-				line = "XAuthorityInSystemDir=yes"
-				seenAuthority = true
-			}
-		}
-		output = append(output, line)
+	updatedText, originalXorg, originalPath, err := transformXrdpSesmanConfig(string(original))
+	if err != nil {
+		return err
 	}
-	if strings.EqualFold(section, "Globals") && !seenAuthority {
-		output = append(output, "XAuthorityInSystemDir=yes")
-		seenAuthority = true
+	if !xrdpSessionHasXauth(originalPath, tinyDeskSessionHome) {
+		return errors.New("xauth is unavailable on the original XRDP session PATH")
 	}
-	if !foundGlobals || !seenAuthority {
-		return errors.New("sesman.ini has no usable [Globals] section; refusing an unprotected Tiny Desk home")
+	ids, err := lookupUserIDs("labuser")
+	if err != nil {
+		return err
 	}
-	updated := []byte(strings.Join(output, "\n"))
+	idPath, err := xrdpIDExecutable()
+	if err != nil {
+		return err
+	}
+	if err := ensureManagedDirectory(tinyDeskXauthShimDir, 0, 0, 0755); err != nil {
+		return err
+	}
+	xauthShim := renderXrdpXauthShim(ids.uid, idPath, originalPath, filepath.Join(tinyDeskWorkHome, ".Xauthority"))
+	if err := writeManagedConfig(filepath.Join(tinyDeskXauthShimDir, "xauth"), xauthShim, 0755); err != nil {
+		return err
+	}
+	xorgShim := renderXrdpXorgShim(ids.uid, idPath, originalXorg, filepath.Join(tinyDeskWorkHome, ".xorgxrdp.%s.log"))
+	if err := writeManagedConfig(tinyDeskXorgShimPath, xorgShim, 0755); err != nil {
+		return err
+	}
+	updated := []byte(updatedText)
 	if err := atomicWrite(path, updated, 0644); err != nil {
 		return err
 	}
@@ -1630,6 +1638,9 @@ func startManagementServices(cfg config.Config) error {
 			if !started {
 				return errors.New("xrdp service could not be enabled")
 			}
+			if err := exec.Command("systemctl", "restart", "xrdp-sesman.service").Run(); err != nil {
+				return fmt.Errorf("xrdp-sesman could not reload the Tiny Desk configuration: %w", err)
+			}
 			restarted := false
 			for _, unit := range []string{"xrdp.service", "xrdp"} {
 				if exec.Command("systemctl", "restart", unit).Run() == nil {
@@ -1670,6 +1681,11 @@ func startManagementServices(cfg config.Config) error {
 		if cfg.Profile != "fmu-only" {
 			if err := exec.Command("rc-update", "add", "xrdp", "default").Run(); err != nil {
 				return err
+			}
+			if exec.Command("rc-service", "-e", "xrdp-sesman").Run() == nil {
+				if err := exec.Command("rc-service", "xrdp-sesman", "restart").Run(); err != nil {
+					return fmt.Errorf("xrdp-sesman could not reload the Tiny Desk configuration: %w", err)
+				}
 			}
 			if exec.Command("rc-service", "xrdp", "start").Run() != nil {
 				if err := exec.Command("rc-service", "xrdp", "restart").Run(); err != nil {

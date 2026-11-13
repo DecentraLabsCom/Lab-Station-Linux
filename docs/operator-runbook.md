@@ -114,6 +114,32 @@ of the reservation. Keep the direct Guacamole connection and RDP network path
 restricted to trusted operators; the station does not enforce a lease at
 application launch.
 
+### Diagnose a black Tiny Desk screen
+
+XRDP starts Xorg before it runs the Tiny Desk `.xsession` launcher. If the
+session manager reports that Xorg timed out or exited, Chromium and the
+application launcher have not started yet; an empty `.xsession-errors` file is
+expected in that case. Inspect the Xorg log and session-manager journal first:
+
+```sh
+sudo find /var/lib/decentralabs/lab-station/tiny-desk-home -maxdepth 1 -type f -name '.xorgxrdp.*.log' -print
+sudo tail -n 100 /var/log/xrdp-sesman.log
+sudo tail -n 100 /var/lib/decentralabs/lab-station/tiny-desk-home/.xsession-errors
+```
+
+The actual `labuser` session home is root-owned and read-only. Lab Station
+installs root-owned XRDP startup shims to put that account's Xauthority file
+and Xorg log in its private writable workspace. The XRDP session PATH is
+prefixed with the managed `xauth` shim, and the configured Xorg executable is
+wrapped; both shims pass through the original commands for other account UIDs.
+The original Xorg arguments and session PATH remain in the XRDP configuration.
+
+Upstream XRDP 0.9.17 ignores `XAuthorityInSystemDir`, so the presence of that
+option does not establish that its Xauthority file is writable. Similarly, a
+`status-json` readiness result checks the managed configuration; it does not
+prove that a Guacamole RDP desktop has completed an Xorg startup. Verify a real
+connection after installation, including any other XRDP accounts in use.
+
 ## Confirm Gateway trust and readiness
 
 In Lab Manager, review the discovered SSH host fingerprint against the

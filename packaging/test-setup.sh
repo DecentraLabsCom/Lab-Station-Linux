@@ -17,9 +17,13 @@ trap 'rm -rf "$FAKE_BIN"' EXIT HUP INT TERM
 # The OpenRC adapter test runs on systemd-based images too, so create the
 # service-script directory that an OpenRC host provides.
 mkdir -p /run/systemd/system /etc/ssh /etc/xrdp /etc/init.d
+if ! command -v xauth >/dev/null 2>&1; then
+    printf '#!/bin/sh\nexit 0\n' > /usr/bin/xauth
+    chmod 0755 /usr/bin/xauth
+fi
 printf 'Include /etc/ssh/sshd_config.d/*.conf\n' > /etc/ssh/sshd_config
 printf '[Globals]\nallow_channels=true\nallow_multimon=true\n' > /etc/xrdp/xrdp.ini
-printf '[Globals]\nXAuthorityInSystemDir=no\n' > /etc/xrdp/sesman.ini
+printf '[Globals]\nEnableUserWindowManager=true\n\n[Security]\nXAuthorityInSystemDir=no\n\n[Xorg]\nparam=Xorg\nparam=-config\nparam=xrdp/xorg.conf\nparam=-noreset\nparam=-nolisten\nparam=tcp\nparam=-logfile\nparam=.xorgxrdp.%%s.log\n' > /etc/xrdp/sesman.ini
 
 cat > "$FAKE_BIN/systemctl" <<'EOF'
 #!/bin/sh
@@ -224,6 +228,7 @@ test -f /var/lib/decentralabs/lab-station/tiny-desk-session/.xsession
 test "$(stat -c '%u:%g:%a' /var/lib/decentralabs/lab-station/tiny-desk-session)" = '0:0:755'
 test "$(stat -c '%u:%g:%a' /var/lib/decentralabs/lab-station/tiny-desk-session/.xsession)" = '0:0:755'
 test "$(readlink /var/lib/decentralabs/lab-station/tiny-desk-session/.xsession-errors)" = '/var/lib/decentralabs/lab-station/tiny-desk-home/.xsession-errors'
+test "$(readlink /var/lib/decentralabs/lab-station/tiny-desk-session/.Xauthority)" = '/var/lib/decentralabs/lab-station/tiny-desk-home/.Xauthority'
 LABUSER_UID=$(awk -F: '$1 == "labuser" { print $3 }' /etc/passwd)
 test "$(stat -c '%u:%a' /var/lib/decentralabs/lab-station/tiny-desk-home)" = "$LABUSER_UID:700"
 test "$(awk -F: '$1 == "labuser" { print $6 }' /etc/passwd)" = '/var/lib/decentralabs/lab-station/tiny-desk-session'
@@ -232,7 +237,10 @@ test "$(stat -c '%a' /usr/share/decentralabs/lab-station/tiny-desk-rc.xml)" = 64
 grep -q '^allow_channels=false$' /etc/xrdp/xrdp.ini
 grep -q '^allow_multimon=false$' /etc/xrdp/xrdp.ini
 test -f /etc/xrdp/xrdp.ini.decentralabs-lab-station.bak
-grep -q '^XAuthorityInSystemDir=yes$' /etc/xrdp/sesman.ini
+grep -q '^param=/usr/lib/decentralabs/lab-station/xrdp-xorg$' /etc/xrdp/sesman.ini
+grep -q '^PATH=/usr/lib/decentralabs/lab-station/xrdp-auth-bin:' /etc/xrdp/sesman.ini
+test -x /usr/lib/decentralabs/lab-station/xrdp-auth-bin/xauth
+test -x /usr/lib/decentralabs/lab-station/xrdp-xorg
 test -f /etc/xrdp/sesman.ini.decentralabs-lab-station.bak
 test -f /opt/decentralabs/fmu-executor/app/main.py
 test -f /etc/systemd/system/decentralabs-labstation-fmu.service

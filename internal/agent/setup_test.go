@@ -235,7 +235,7 @@ func TestSetupEndToEnd(t *testing.T) {
 	if err := os.WriteFile("/etc/xrdp/xrdp.ini", []byte("[Globals]\nallow_channels=true\nallow_multimon=true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile("/etc/xrdp/sesman.ini", []byte("[Globals]\nXAuthorityInSystemDir=no\n"), 0o644); err != nil {
+	if err := os.WriteFile("/etc/xrdp/sesman.ini", []byte("[Globals]\nEnableUserWindowManager=true\n\n[Security]\nXAuthorityInSystemDir=no\n\n[Xorg]\nparam=Xorg\nparam=-config\nparam=xrdp/xorg.conf\nparam=-noreset\nparam=-nolisten\nparam=tcp\nparam=-logfile\nparam=.xorgxrdp.%s.log\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	configPath := "/etc/decentralabs/lab-station/e2e.toml"
@@ -315,6 +315,9 @@ func TestSetupEndToEnd(t *testing.T) {
 	if target, err := os.Readlink(filepath.Join(tinyDeskSessionHome, ".xsession-errors")); err != nil || target != filepath.Join(tinyDeskWorkHome, ".xsession-errors") {
 		t.Errorf("Xsession log path is not redirected to the writable workspace: %q, %v", target, err)
 	}
+	if target, err := os.Readlink(filepath.Join(tinyDeskSessionHome, ".Xauthority")); err != nil || target != filepath.Join(tinyDeskWorkHome, ".Xauthority") {
+		t.Errorf("Xauthority path is not redirected to the writable workspace: %q, %v", target, err)
+	}
 	if account, err := user.Lookup("labuser"); err != nil || account.HomeDir != tinyDeskSessionHome {
 		t.Errorf("labuser account home is not the protected Tiny Desk session directory: %#v, %v", account, err)
 	}
@@ -349,8 +352,8 @@ func TestSetupEndToEnd(t *testing.T) {
 		t.Errorf("original RDP config was not backed up: %v", err)
 	}
 	sesman, err := os.ReadFile("/etc/xrdp/sesman.ini")
-	if err != nil || !strings.Contains(string(sesman), "XAuthorityInSystemDir=yes") {
-		t.Errorf("xrdp-sesman did not move Xauthority outside the protected home: %q, %v", sesman, err)
+	if err != nil || !strings.Contains(string(sesman), "param="+tinyDeskXorgShimPath) || !strings.Contains(string(sesman), "PATH="+tinyDeskXauthShimDir+":") {
+		t.Errorf("xrdp-sesman did not configure account-scoped startup: %q, %v", sesman, err)
 	}
 	if _, err := os.Stat("/etc/xrdp/sesman.ini.decentralabs-lab-station.bak"); err != nil {
 		t.Errorf("original xrdp-sesman config was not backed up: %v", err)
@@ -401,6 +404,22 @@ func TestSetupEndToEnd(t *testing.T) {
 	}
 	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err != nil {
 		t.Fatalf("Tiny Desk could not restore the managed session log link after rejection: %v", err)
+	}
+	authorityLink := filepath.Join(tinyDeskSessionHome, ".Xauthority")
+	if err := os.Remove(authorityLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/tmp/unmanaged-xauthority", authorityLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err == nil {
+		t.Error("Tiny Desk setup accepted an unmanaged Xauthority target")
+	}
+	if err := os.Remove(authorityLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTinyDeskSession(config.Config{Profile: "hybrid"}); err != nil {
+		t.Fatalf("Tiny Desk could not restore the Xauthority link after rejection: %v", err)
 	}
 	if mode, err := os.ReadFile("/tmp/labstation-test-wol-mode"); err != nil || strings.TrimSpace(string(mode)) != "g" {
 		t.Errorf("Wake-on-LAN did not remain enabled: %q, %v", mode, err)
@@ -455,7 +474,7 @@ func TestSetupEndToEnd(t *testing.T) {
 		t.Errorf("hybrid profile did not create the protected Tiny Desk home: %v", err)
 	}
 	serviceLog, err := os.ReadFile("/tmp/labstation-test-systemctl.log")
-	if err != nil || !strings.Contains(string(serviceLog), "enable --now xrdp.service") {
+	if err != nil || !strings.Contains(string(serviceLog), "enable --now xrdp.service") || !strings.Contains(string(serviceLog), "restart xrdp-sesman.service") {
 		t.Errorf("xrdp was not enabled for the graphical profile: %q, %v", serviceLog, err)
 	}
 	if err := Setup(args); err != nil {

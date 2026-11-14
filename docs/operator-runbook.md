@@ -191,10 +191,14 @@ helper revalidates the XRDP session and uses logind's session termination as
 the final fallback. This behavior applies to managed XRDP/Xorg Tiny Desk
 sessions, not Wayland desktops.
 
-Closing the browser or Guacamole tunnel temporarily does not itself release the
-XRDP session. Reservation users can reconnect while their authorization remains
-valid; the controlled application close runs when the station receives the
-actual session release.
+Closing the browser or Guacamole tunnel does not release the XRDP session
+immediately. If no reservation or demo lease is active, the daemon releases the
+managed Tiny Desk session after its RDP client has remained disconnected for
+one minute. Reconnecting during that minute resets the timer. The watchdog
+fails closed if it cannot verify the RDP connection or session state. With an
+active reservation or demo lease, this automatic cleanup is suspended so the
+user can reconnect while authorized; the controlled application close runs
+when the lease is released or expires.
 
 ### Configure Guacamole for Linux XRDP
 

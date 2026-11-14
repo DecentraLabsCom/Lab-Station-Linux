@@ -55,6 +55,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.enforceLeaseExpiry(ctx); err != nil {
 				a.log("lease-watchdog-error", map[string]any{"error": err.Error()})
 			}
+			if err := a.enforceUnreservedTinyDeskDisconnect(ctx); err != nil {
+				a.log("unreserved-tinydesk-watchdog-error", map[string]any{"error": err.Error()})
+			}
 		}
 	}
 }

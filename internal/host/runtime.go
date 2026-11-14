@@ -15,6 +15,7 @@ type Runtime interface {
 	Supervisor() Supervisor
 	NetworkInterfaces() []map[string]string
 	Sessions() (local []map[string]any, remote []map[string]any, queryOK bool)
+	RDPClientsConnected() (connected bool, stateKnown bool)
 	WakeStatus(interfaces []map[string]string) (supported bool, enabled bool)
 	WakePersistent(interfaces []map[string]string) bool
 	EnergyStatus() EnergyStatus

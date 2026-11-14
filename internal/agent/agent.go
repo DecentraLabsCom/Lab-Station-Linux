@@ -24,13 +24,15 @@ import (
 )
 
 type Agent struct {
-	Config        config.Config
-	Runtime       host.Runtime
-	runHelper     func(context.Context, []byte) error
-	cleanWorkData func() error
-	rebootMarker  func() bool
-	secretProbe   func() bool
-	mu            sync.Mutex
+	Config            config.Config
+	Runtime           host.Runtime
+	runHelper         func(context.Context, []byte) error
+	cleanWorkData     func() error
+	rebootMarker      func() bool
+	secretProbe       func() bool
+	mu                sync.Mutex
+	disconnectMu      sync.Mutex
+	disconnectedSince time.Time
 }
 
 type Result struct {
@@ -161,7 +163,7 @@ func ValidateCommand(command string, args []string) error {
 	case "prepare-session":
 		validOption = map[string]bool{"--guard-grace": true, "--guard-message": true, "--guard-silent": true, "--guard-notify": true, "--no-guard": true, "--message": true, "--grace": true, "--silent": true, "--no-notify": true, "--reservation-key": true, "--operation-id": true}
 	case "release-session":
-		validOption = map[string]bool{"--reboot": true, "--reboot-timeout": true, "--reservation-key": true, "--operation-id": true}
+		validOption = map[string]bool{"--reboot": true, "--reboot-timeout": true, "--reservation-key": true, "--operation-id": true, "--require-rdp-disconnected": true}
 	case "session guard":
 		validOption = map[string]bool{"--guard-grace": true, "--guard-message": true, "--guard-silent": true, "--guard-notify": true, "--no-guard": true, "--user": true, "--message": true, "--grace": true, "--silent": true, "--no-notify": true, "--operation-id": true}
 	case "power":
@@ -611,10 +613,13 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 		return 2, "", "profile does not support a physical laboratory session", map[string]any{"code": "STATION_PROFILE_UNSUPPORTED"}
 	}
 	reboot := false
+	requireRDPDisconnected := false
 	rebootTimeout := 0
 	for _, arg := range args {
 		key, value, hasValue := strings.Cut(arg, "=")
 		switch key {
+		case "--require-rdp-disconnected":
+			requireRDPDisconnected = true
 		case "--reboot":
 			enabled, err := booleanOptionValue(value, hasValue, true)
 			if err != nil {
@@ -636,9 +641,23 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	if !sessionsOK {
 		return 2, "", "session inventory unavailable; refusing to release station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED"}
 	}
+	if requireRDPDisconnected {
+		if connected, known := a.hostRuntime().RDPClientsConnected(); !known {
+			return 2, "", "RDP connection state is unavailable; refusing automatic session release", map[string]any{"code": "STATION_RDP_CLIENT_STATE_UNKNOWN"}
+		} else if connected {
+			return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED"}
+		}
+	}
 	terminated := 0
 	for _, session := range remote {
 		if session["user"] == "labuser" && session["type"] == "x11" {
+			if requireRDPDisconnected {
+				if connected, known := a.hostRuntime().RDPClientsConnected(); !known {
+					return 2, "", "RDP connection state is unavailable; refusing automatic session release", map[string]any{"code": "STATION_RDP_CLIENT_STATE_UNKNOWN"}
+				} else if connected {
+					return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED"}
+				}
+			}
 			if err := a.helper(ctx, helperSessionRequest(session, true, a.Config.Application.CloseTimeoutSeconds)); err != nil {
 				return 2, "", "unable to close Tiny Desk session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 			}

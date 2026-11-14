@@ -333,7 +333,7 @@ func (a *Agent) executeOperatorPrepare(ctx context.Context, request Request) Res
 // trusted station-management channel against reservation lease operations.
 // Lease-bound release continues to use dispatcher protocol 2.
 func (a *Agent) executeOperatorRelease(ctx context.Context, request Request) Result {
-	if len(request.Args) != 0 {
+	if len(request.Args) > 1 || (len(request.Args) == 1 && request.Args[0] != "--require-rdp-disconnected") {
 		return leaseErrorResult(request, "STATION_COMMAND_REJECTED", "operator release does not accept arguments")
 	}
 	operationLock, err := lockLeaseOperation(a.Config.StateDir, request.ID, true)
@@ -359,7 +359,7 @@ func (a *Agent) executeOperatorRelease(ctx context.Context, request Request) Res
 		return leaseErrorResult(request, "STATION_LEASE_CONFLICT", "an active lease must be released with its reservation context")
 	}
 
-	return a.Execute(ctx, request.ID, "release-session", nil)
+	return a.Execute(ctx, request.ID, "release-session", request.Args)
 }
 
 func newLeaseOperation(request Request, hash string, result Result, generation uint64) leaseOperation {
@@ -603,4 +603,91 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 	}
 	a.appendEvent(map[string]any{"kind": "lease-expired", "timestamp": updatedAt, "leaseId": active.LeaseID, "generation": active.Generation, "cleanupExitCode": result.ExitCode})
 	return nil
+}
+
+const unreservedTinyDeskDisconnectGrace = time.Minute
+
+func (a *Agent) enforceUnreservedTinyDeskDisconnect(ctx context.Context) error {
+	return a.enforceUnreservedTinyDeskDisconnectAt(ctx, time.Now().UTC(), unreservedTinyDeskDisconnectGrace)
+}
+
+func (a *Agent) enforceUnreservedTinyDeskDisconnectAt(ctx context.Context, now time.Time, grace time.Duration) error {
+	if ctx.Err() != nil || a.Config.Profile == "fmu-only" {
+		a.resetUnreservedDisconnectTimer()
+		return nil
+	}
+	lock, err := lockLeaseJournal(a.Config.StateDir)
+	if err != nil {
+		a.resetUnreservedDisconnectTimer()
+		return err
+	}
+	state, err := loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		unlockState(lock)
+		a.resetUnreservedDisconnectTimer()
+		return err
+	}
+	if state.Active != nil {
+		unlockState(lock)
+		a.resetUnreservedDisconnectTimer()
+		return nil
+	}
+	unlockState(lock)
+
+	_, remote, sessionsKnown := a.hostRuntime().Sessions()
+	if !sessionsKnown || !hasSeatlessTinyDeskSession(remote) {
+		a.resetUnreservedDisconnectTimer()
+		return nil
+	}
+	connected, connectionStateKnown := a.hostRuntime().RDPClientsConnected()
+	if !connectionStateKnown || connected {
+		a.resetUnreservedDisconnectTimer()
+		return nil
+	}
+
+	a.disconnectMu.Lock()
+	if a.disconnectedSince.IsZero() {
+		a.disconnectedSince = now
+		a.disconnectMu.Unlock()
+		return nil
+	}
+	disconnectedSince := a.disconnectedSince
+	a.disconnectMu.Unlock()
+	if now.Before(disconnectedSince) || now.Sub(disconnectedSince) < grace {
+		return nil
+	}
+
+	result := a.executeOperatorRelease(ctx, Request{ID: newID(), Operation: "execute", Command: "release-session", Args: []string{"--require-rdp-disconnected"}})
+	if result.ExitCode >= 2 {
+		a.resetUnreservedDisconnectTimer()
+		if result.Metadata["code"] == "STATION_LEASE_CONFLICT" || result.Metadata["code"] == "STATION_RDP_CLIENT_CONNECTED" || result.Metadata["code"] == "STATION_RDP_CLIENT_STATE_UNKNOWN" {
+			return nil
+		}
+		return fmt.Errorf("automatic Tiny Desk release failed: %s", result.Message)
+	}
+	a.resetUnreservedDisconnectTimer()
+	a.appendEvent(map[string]any{"kind": "unreserved-tinydesk-disconnect-cleanup", "timestamp": now.Format(time.RFC3339Nano), "sessionId": firstSeatlessTinyDeskSessionID(remote)})
+	return nil
+}
+
+func hasSeatlessTinyDeskSession(sessions []map[string]any) bool {
+	return firstSeatlessTinyDeskSessionID(sessions) != ""
+}
+
+func firstSeatlessTinyDeskSessionID(sessions []map[string]any) string {
+	for _, session := range sessions {
+		if session["user"] != "labuser" || session["type"] != "x11" || session["seat"] != "" {
+			continue
+		}
+		if id, ok := session["id"].(string); ok && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func (a *Agent) resetUnreservedDisconnectTimer() {
+	a.disconnectMu.Lock()
+	a.disconnectedSince = time.Time{}
+	a.disconnectMu.Unlock()
 }

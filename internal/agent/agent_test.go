@@ -47,12 +47,21 @@ type fakeRuntime struct {
 	notices       []string
 	notifyStarted chan struct{}
 	notifyRelease <-chan struct{}
+	rdpConnected  bool
+	rdpStateKnown bool
+	rdpState      func() (bool, bool)
 }
 
 func (f *fakeRuntime) Supervisor() host.Supervisor            { return f.supervisor }
 func (f *fakeRuntime) NetworkInterfaces() []map[string]string { return f.interfaces }
 func (f *fakeRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
 	return append([]map[string]any(nil), f.local...), append([]map[string]any(nil), f.remote...), f.sessionsOK
+}
+func (f *fakeRuntime) RDPClientsConnected() (bool, bool) {
+	if f.rdpState != nil {
+		return f.rdpState()
+	}
+	return f.rdpConnected, f.rdpStateKnown
 }
 func (f *fakeRuntime) WakeStatus([]map[string]string) (bool, bool) { return f.wakeOK, f.wakeOn }
 func (f *fakeRuntime) WakePersistent([]map[string]string) bool     { return f.wakeSaved }
@@ -103,18 +112,23 @@ func newTestAgent(t *testing.T, profile string, runtime *fakeRuntime) (*Agent, *
 		*calls = append(*calls, request)
 		if request["operation"] == "terminate-session" {
 			if sessionID, ok := request["sessionId"].(string); ok {
-				remaining := runtime.local[:0]
-				for _, session := range runtime.local {
-					if session["id"] != sessionID {
-						remaining = append(remaining, session)
-					}
-				}
-				runtime.local = remaining
+				runtime.local = removeSessionByID(runtime.local, sessionID)
+				runtime.remote = removeSessionByID(runtime.remote, sessionID)
 			}
 		}
 		return nil
 	}
 	return a, calls
+}
+
+func removeSessionByID(sessions []map[string]any, id string) []map[string]any {
+	remaining := sessions[:0]
+	for _, session := range sessions {
+		if session["id"] != id {
+			remaining = append(remaining, session)
+		}
+	}
+	return remaining
 }
 
 func TestTinyDeskCloseCoordinatesConfiguredForSingleAndPrimaryMultiAppOnly(t *testing.T) {

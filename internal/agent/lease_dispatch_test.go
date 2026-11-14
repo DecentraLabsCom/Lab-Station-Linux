@@ -189,6 +189,159 @@ func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing
 	}
 }
 
+func TestUnreservedTinyDeskDisconnectReleasesAfterGrace(t *testing.T) {
+	runtime := &fakeRuntime{
+		remote:        []map[string]any{{"id": "rdp-unreserved", "user": "labuser", "remote": false, "seat": "", "type": "x11"}},
+		sessionsOK:    true,
+		rdpStateKnown: true,
+	}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	grace := unreservedTinyDeskDisconnectGrace
+	if grace != time.Minute {
+		t.Fatalf("unreserved Tiny Desk disconnect grace = %s, want one minute", grace)
+	}
+	start := time.Now().UTC()
+
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, grace); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(grace-time.Second), grace); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("Tiny Desk was released before the disconnect grace elapsed: %#v", *calls)
+	}
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(grace), grace); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || (*calls)[0]["sessionId"] != "rdp-unreserved" {
+		t.Fatalf("disconnected unreserved Tiny Desk session was not released once: %#v", *calls)
+	}
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(grace+time.Second), grace); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("released Tiny Desk session was terminated more than once: %#v", *calls)
+	}
+}
+
+func TestUnreservedTinyDeskDisconnectIsDeferredByReservationLease(t *testing.T) {
+	runtime := &fakeRuntime{
+		remote:        []map[string]any{{"id": "rdp-reserved", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
+		sessionsOK:    true,
+		rdpStateKnown: true,
+	}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	start := time.Now().UTC()
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	lease := &leaseRecord{LeaseID: "reservation-active", Kind: "reservation", Generation: 1, State: "active", NotBefore: start.Format(time.RFC3339Nano), ExpiresAt: start.Add(time.Hour).Format(time.RFC3339Nano)}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{Active: lease, Operations: map[string]leaseOperation{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(2*time.Minute), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("active reservation session was terminated on disconnect: %#v", *calls)
+	}
+	state, err := loadLeaseState(a.Config.StateDir)
+	if err != nil || state.Active == nil || state.Active.LeaseID != lease.LeaseID {
+		t.Fatalf("reserved lease was modified: state=%#v err=%v", state, err)
+	}
+}
+
+func TestUnreservedTinyDeskDisconnectTimerResetsWhenClientReconnects(t *testing.T) {
+	runtime := &fakeRuntime{
+		remote:        []map[string]any{{"id": "rdp-reconnect", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
+		sessionsOK:    true,
+		rdpStateKnown: true,
+	}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	start := time.Now().UTC()
+	grace := unreservedTinyDeskDisconnectGrace
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, grace); err != nil {
+		t.Fatal(err)
+	}
+	runtime.rdpConnected = true
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(30*time.Second), grace); err != nil {
+		t.Fatal(err)
+	}
+	runtime.rdpConnected = false
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(60*time.Second), grace); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(119*time.Second), grace); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("reconnected Tiny Desk session was released before a full new grace period: %#v", *calls)
+	}
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(120*time.Second), grace); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("Tiny Desk session was not released after a full disconnected grace period: %#v", *calls)
+	}
+}
+
+func TestUnreservedTinyDeskDisconnectRequiresKnownIdleSessionAndRDPState(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		connected     bool
+		stateKnown    bool
+		sessionsKnown bool
+	}{
+		{name: "connected client", connected: true, stateKnown: true, sessionsKnown: true},
+		{name: "unknown RDP socket state", stateKnown: false, sessionsKnown: true},
+		{name: "unknown session inventory", stateKnown: true, sessionsKnown: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := &fakeRuntime{
+				remote:        []map[string]any{{"id": "rdp-1", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
+				sessionsOK:    test.sessionsKnown,
+				rdpConnected:  test.connected,
+				rdpStateKnown: test.stateKnown,
+			}
+			a, calls := newTestAgent(t, "dedicated", runtime)
+			start := time.Now().UTC()
+			if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, time.Second); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(time.Hour), time.Second); err != nil {
+				t.Fatal(err)
+			}
+			if len(*calls) != 0 {
+				t.Fatalf("connected or uncertain RDP state triggered Release: %#v", *calls)
+			}
+		})
+	}
+}
+
+func TestUnreservedTinyDeskReleaseRechecksForRDPReconnectBeforeTermination(t *testing.T) {
+	checks := 0
+	runtime := &fakeRuntime{
+		remote:     []map[string]any{{"id": "rdp-reconnected", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
+		sessionsOK: true,
+		rdpState: func() (bool, bool) {
+			checks++
+			return checks >= 3, true
+		},
+	}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	start := time.Now().UTC()
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(time.Minute), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("reconnected RDP session was terminated during automatic release: %#v", *calls)
+	}
+}
+
 func TestDispatchV2OperationStatusReturnsPersistedResult(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
 	cfg := config.Defaults()

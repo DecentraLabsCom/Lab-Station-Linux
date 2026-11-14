@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.4] - 2026-11-14
+
+### Added
+- Automatically release an unreserved Tiny Desk session after its RDP client
+  has remained disconnected for one minute.
+
+### Fixed
+- Preserve Tiny Desk sessions while a reservation/demo lease is active, cancel
+  automatic cleanup when an RDP client reconnects, and fail closed when the
+  station cannot determine the RDP connection state.
+
 ## [0.4.3] - 2026-11-14
 
 ### Fixed

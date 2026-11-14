@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-const SocketPath = "/run/decentralabs-lab-station-helper/helper.sock"
+const SocketRuntimeDirectoryName = "decentralabs-lab-station-helper"
+const SocketPath = "/run/" + SocketRuntimeDirectoryName + "/helper.sock"
 
 const (
 	maxRequestBytes  = 8192

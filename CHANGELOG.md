@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-14
+
+### Fixed
+- Generate the privileged helper's systemd runtime directory from the shared
+  socket path so the helper starts and the unreserved Tiny Desk watchdog can
+  release disconnected sessions under `NoNewPrivileges`.
+
 ## [0.4.5] - 2026-11-14
 
 ### Fixed

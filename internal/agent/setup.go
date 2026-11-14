@@ -22,6 +22,7 @@ import (
 
 	"github.com/decentralabs/lab-station-linux/internal/config"
 	"github.com/decentralabs/lab-station-linux/internal/host"
+	"github.com/decentralabs/lab-station-linux/internal/privileged"
 )
 
 //go:embed fmu_executor_version.txt
@@ -1577,7 +1578,7 @@ Group=labstation
 ExecStart=/usr/lib/decentralabs/lab-station/labstation-helper-bin --serve
 Restart=on-failure
 RestartSec=2
-RuntimeDirectory=decentralabs-labstation-helper
+RuntimeDirectory=` + privileged.SocketRuntimeDirectoryName + `
 RuntimeDirectoryMode=0750
 UMask=0007
 NoNewPrivileges=true

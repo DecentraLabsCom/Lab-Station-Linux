@@ -282,7 +282,7 @@ func executeInternalCleanup(operation string) error {
 	if err != nil {
 		return err
 	}
-	if os.Geteuid() != int(uid) || os.Getegid() != int(gid) {
+	if !cleanupIdentityMatches(uid, gid, os.Geteuid(), os.Getegid()) {
 		return errors.New("internal cleanup must run as its workspace owner")
 	}
 	switch operation {
@@ -299,6 +299,10 @@ func executeInternalCleanup(operation string) error {
 	default:
 		return errors.New("internal cleanup operation is not allowlisted")
 	}
+}
+
+func cleanupIdentityMatches(uid, gid uint32, effectiveUID, effectiveGID int) bool {
+	return int64(effectiveUID) == int64(uid) && int64(effectiveGID) == int64(gid)
 }
 
 func internalCleanupIdentity(operation string) (string, uint32, uint32, error) {

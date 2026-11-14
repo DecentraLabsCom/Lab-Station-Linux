@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,25 @@ func TestDecodeRequestAcceptsOneBoundedStrictObject(t *testing.T) {
 func TestInternalCleanupRejectsUnlistedOperations(t *testing.T) {
 	if _, _, _, err := internalCleanupIdentity("--internal-clean-anything"); err == nil {
 		t.Fatal("internal cleanup accepted an unlisted operation")
+	}
+}
+
+func TestCleanupIdentityMatchesWithoutNarrowingUnsignedIDs(t *testing.T) {
+	if !cleanupIdentityMatches(2300, 2301, 2300, 2301) {
+		t.Fatal("matching positive process IDs were rejected")
+	}
+	if cleanupIdentityMatches(^uint32(0), 1, -1, 1) {
+		t.Fatal("negative effective UID matched a wrapped unsigned UID")
+	}
+	if cleanupIdentityMatches(1, ^uint32(0), 1, -1) {
+		t.Fatal("negative effective GID matched a wrapped unsigned GID")
+	}
+
+	if strconv.IntSize == 64 {
+		maxID := ^uint32(0)
+		if !cleanupIdentityMatches(maxID, maxID, int(int64(maxID)), int(int64(maxID))) {
+			t.Fatal("a valid 32-bit UID/GID was not compared without truncation")
+		}
 	}
 }
 

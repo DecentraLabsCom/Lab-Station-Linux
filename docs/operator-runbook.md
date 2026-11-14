@@ -36,7 +36,9 @@ sudo ./install.sh \
 Replace `dedicated` with the approved profile. Add `--no-fmu-executor` when the
 station should not install the optional bundled FMU Executor. On hosts managed
 by a configuration tool, install OS dependencies there and add
-`--no-install-deps`.
+`--no-install-deps`. For Tiny Desk, include XRDP, Xorg, Openbox and `wmctrl`;
+`wmctrl` is used to request app window closure during session release. Include
+`xdotool` when configuring close-button coordinates.
 For an approved Wake-on-LAN interface, add `--wake-interface <interface>` only
 after checking that the NIC and firmware support the required mode.
 
@@ -75,12 +77,13 @@ id = "lab-app"
 command = ""
 args = []
 user = "labuser"
-close_timeout_seconds = 15
+close_timeout_seconds = 10
 
 [[application.apps]]
 id = "instrument-panel"
 command = "/opt/lab/apps/instrument-panel"
 args = []
+close_coordinates = [394, 395] # optional; only for the primary app
 
 [[application.apps]]
 id = "reference-viewer"
@@ -106,6 +109,39 @@ unavailable until every configured executable exists and is executable. For
 one application, continue using `application.command` and `application.args`
 as before.
 
+For one application, `close_coordinates` can be set in `[application]`:
+
+```toml
+[application]
+command = "/opt/lab/apps/instrument-panel"
+args = []
+close_coordinates = [394, 395]
+```
+
+Coordinates are relative to the top-left of the app window. To capture them,
+open the app at the same Tiny Desk size and layout used in normal operation,
+open a terminal in that RDP session, and identify the app's window ID from
+`wmctrl -lpG`. Then note the app window origin and start a short polling loop:
+
+```sh
+window_id=0x01200007 # replace with the app window ID from wmctrl
+xdotool getwindowgeometry --shell "$window_id"
+while :; do xdotool getmouselocation --shell | tr '\n' ' '; printf '\n'; sleep 0.2; done
+```
+
+Move the pointer over the intended in-app close/stop button and read the latest
+pointer `X` and `Y`; press `Ctrl+C` to stop polling. Subtract the app window's
+`X` and `Y` from the pointer's screen `X` and `Y` to get the two values for
+`close_coordinates`. The numbers in the examples are placeholders. Configure
+the setting only on the single app or, in a multi-app session, on the first
+`[[application.apps]]` entry. Keep the app size, desktop scale and RDP
+resolution consistent: the setting stores a position, and a changed layout can
+make the same point land on a different control. This check cannot identify
+which control is at that point. Keep the polling terminal visible but outside
+the app button's area. If adding coordinates to an existing station, install
+`xdotool` with the host's package manager before applying the app profile;
+`app apply` does not install operating system packages.
+
 Executable availability is a configuration check, not a test launch. In
 particular, Chromium installed as a Snap has failed when its launcher tried to
 create data in the protected, root-owned `labuser` home. Prefer a compatible
@@ -121,6 +157,42 @@ up station state. Both paths use `labuser`, so disconnect provider maintenance
 sessions before a reservation begins. Keep the direct Guacamole connection and
 RDP network path restricted to trusted operators; the station does not enforce
 a lease at application launch.
+
+Reservation preparation clears Tiny Desk work files and FMU temporary state
+through bounded helper processes running as the account that owns each data
+directory. The systemd service grants those helpers access to the managed
+workspace paths inside its filesystem sandbox. If the prepare deadline expires
+during cleanup, the operation returns `STATION_OPERATION_CANCELLED` and its
+lease cannot become active. Other cleanup errors remain visible as preparation
+warnings.
+
+When a Tiny Desk session is released, Lab Station first tries the configured
+coordinate click for the single app or the first app in a multi-app session.
+It does so only when exactly one top-level window belongs to that app process
+group, that window is active, the coordinates are within its bounds, and the
+window under the pointer at that point belongs to the same app process group.
+In a multi-app session, switching to another app skips the coordinate click.
+The click stage uses at most one quarter of the shared close deadline (up to
+2.5 seconds with the default timeout). If `xdotool` is missing or these checks
+fail, the click is skipped.
+
+Lab Station then requests a normal X11 window close for matching app windows
+through Openbox; requests for all app windows are sent concurrently. Apps that
+remain open receive `SIGTERM` concurrently, followed by `SIGKILL` at the end of
+the shared deadline. `close_timeout_seconds` sets that deadline, capped at 10
+seconds. Existing configuration values above 10 remain accepted but are capped
+at runtime. The `wmctrl` package is required for X11 window-close requests; if
+it is missing or an app window cannot be matched to its process group, the
+launcher falls back to process signals.
+If the session's application supervisor cannot be identified, the privileged
+helper revalidates the XRDP session and uses logind's session termination as
+the final fallback. This behavior applies to managed XRDP/Xorg Tiny Desk
+sessions, not Wayland desktops.
+
+Closing the browser or Guacamole tunnel temporarily does not itself release the
+XRDP session. Reservation users can reconnect while their authorization remains
+valid; the controlled application close runs when the station receives the
+actual session release.
 
 ### Configure Guacamole for Linux XRDP
 

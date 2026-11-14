@@ -16,12 +16,14 @@ type Application struct {
 	Args                []string `json:"args"`
 	User                string   `json:"user"`
 	CloseTimeoutSeconds int      `json:"closeTimeoutSeconds"`
+	CloseCoordinates    []int    `json:"closeCoordinates,omitempty"`
 }
 
 type ApplicationLaunch struct {
-	ID      string   `json:"id"`
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
+	ID               string   `json:"id"`
+	Command          string   `json:"command"`
+	Args             []string `json:"args"`
+	CloseCoordinates []int    `json:"closeCoordinates,omitempty"`
 }
 
 const MaxApplicationsPerSession = 8
@@ -54,7 +56,7 @@ func Defaults() Config {
 		ManagementUser: "labstation-ops", ManagementPort: 22, Transport: "ssh", Supervisor: "auto",
 		GuardGraceSeconds:         90,
 		AllowLocalSessionEviction: true,
-		Application:               Application{ID: "lab-app", User: "labuser", CloseTimeoutSeconds: 15},
+		Application:               Application{ID: "lab-app", User: "labuser", CloseTimeoutSeconds: 10},
 	}
 }
 
@@ -132,6 +134,9 @@ func Load(path string) (Config, error) {
 	if len(cfg.Applications) > 0 && cfg.Application.Command != "" {
 		return cfg, errors.New("configure either application.command or application.apps, not both")
 	}
+	if len(cfg.Applications) > 0 && len(cfg.Application.CloseCoordinates) > 0 {
+		return cfg, errors.New("configure close_coordinates on the first application.apps entry, not application")
+	}
 	if cfg.Application.Command != "" && !strings.HasPrefix(cfg.Application.Command, "/") {
 		return cfg, errors.New("application command must be an absolute path")
 	}
@@ -146,6 +151,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Application.CloseTimeoutSeconds < 1 || cfg.Application.CloseTimeoutSeconds > 300 {
 		return cfg, errors.New("close_timeout_seconds must be between 1 and 300")
+	}
+	if err := ValidateCloseCoordinates(cfg.Application.CloseCoordinates); err != nil {
+		return cfg, err
 	}
 	if len(cfg.Application.Args) > 32 {
 		return cfg, errors.New("application.args may contain at most 32 values")
@@ -167,6 +175,12 @@ func ValidateApplicationLaunches(applications []ApplicationLaunch) error {
 	}
 	seen := make(map[string]struct{}, len(applications))
 	for index, application := range applications {
+		if index > 0 && len(application.CloseCoordinates) > 0 {
+			return fmt.Errorf("application.apps[%d].close_coordinates may only be configured on the first application", index)
+		}
+		if err := validateCloseCoordinates(application.CloseCoordinates, fmt.Sprintf("application.apps[%d].close_coordinates", index)); err != nil {
+			return err
+		}
 		if !validApplicationID(application.ID) {
 			return fmt.Errorf("application.apps[%d].id must start with a letter or digit and contain only letters, digits, dot, underscore, or hyphen", index)
 		}
@@ -310,6 +324,12 @@ func (c *Config) assign(section, key string, value any) error {
 			return typeError(key, "integer")
 		}
 		c.Application.CloseTimeoutSeconds = integer
+	case "application.close_coordinates":
+		coordinates, ok := value.([]int)
+		if !ok {
+			return typeError(key, "two-integer coordinate array")
+		}
+		c.Application.CloseCoordinates = coordinates
 	case "application.apps.id", "application.apps.command":
 		if len(c.Applications) == 0 || !isString {
 			return typeError(key, "string")
@@ -326,6 +346,12 @@ func (c *Config) assign(section, key string, value any) error {
 			return typeError(key, "string array")
 		}
 		c.Applications[len(c.Applications)-1].Args = items
+	case "application.apps.close_coordinates":
+		coordinates, ok := value.([]int)
+		if len(c.Applications) == 0 || !ok {
+			return typeError(key, "two-integer coordinate array")
+		}
+		c.Applications[len(c.Applications)-1].CloseCoordinates = coordinates
 	default:
 		return fmt.Errorf("unknown setting %s.%s", section, key)
 	}
@@ -333,6 +359,25 @@ func (c *Config) assign(section, key string, value any) error {
 }
 
 func typeError(key, expected string) error { return fmt.Errorf("%s must be a %s", key, expected) }
+
+func validateCloseCoordinates(coordinates []int, setting string) error {
+	if len(coordinates) == 0 {
+		return nil
+	}
+	if len(coordinates) != 2 {
+		return fmt.Errorf("%s must contain exactly two coordinates", setting)
+	}
+	for _, coordinate := range coordinates {
+		if coordinate < 0 || coordinate > 32767 {
+			return fmt.Errorf("%s coordinates must be between 0 and 32767", setting)
+		}
+	}
+	return nil
+}
+
+func ValidateCloseCoordinates(coordinates []int) error {
+	return validateCloseCoordinates(coordinates, "application.close_coordinates")
+}
 
 func stripComment(line string) string {
 	quoted, escaped := false, false
@@ -397,6 +442,23 @@ func parseValue(raw string) (any, error) {
 			return nil, errors.New("invalid syntax")
 		}
 		parts = append(parts, body[start:])
+		integerValues := make([]int, 0, len(parts))
+		allIntegers := true
+		for index, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" && index == len(parts)-1 {
+				continue
+			}
+			value, err := strconv.Atoi(part)
+			if err != nil {
+				allIntegers = false
+				break
+			}
+			integerValues = append(integerValues, value)
+		}
+		if allIntegers {
+			return integerValues, nil
+		}
 		values := make([]string, 0, len(parts))
 		for index, part := range parts {
 			part = strings.TrimSpace(part)

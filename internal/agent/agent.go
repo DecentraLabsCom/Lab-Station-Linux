@@ -280,7 +280,7 @@ func (a *Agent) Status() map[string]any {
 		physicalIssues = append(physicalIssues, "xrdp service is not active")
 	}
 	if physicalAvailable && !a.tinyDeskConfigurationReady() {
-		physicalIssues = append(physicalIssues, "Tiny Desk session or RDP policy is not ready; verify XRDP startup configuration, the labuser password and xrdp channel restrictions")
+		physicalIssues = append(physicalIssues, "Tiny Desk session or RDP policy is not ready; verify XRDP startup configuration, wmctrl, xdotool when close coordinates are configured, the labuser password and xrdp channel restrictions")
 	}
 	if physicalAvailable && !sessionsOK {
 		physicalIssues = append(physicalIssues, "login session inventory is unavailable")
@@ -539,7 +539,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 				if a.localModeEnabled() {
 					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE"}
 				}
-				if err := a.helper(ctx, helperSessionRequest(session, false)); err != nil {
+				if err := a.helper(ctx, helperSessionRequest(session, false, 0)); err != nil {
 					return 2, "", "unable to release instructor session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
 			}
@@ -564,13 +564,19 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 			a.log("prepare-cleanup-warning", map[string]any{"error": err.Error()})
 		}
 		cleanWorkData := a.cleanWorkData
-		if cleanWorkData == nil {
-			cleanWorkData = cleanTinyDeskWorkingData
+		var cleanupErr error
+		if cleanWorkData != nil {
+			cleanupErr = cleanWorkData()
+		} else {
+			cleanupErr = a.helper(ctx, map[string]any{"operation": "tiny-desk-clean"})
 		}
-		if err := cleanWorkData(); err != nil {
+		if cleanupErr != nil {
 			cleanupWarnings = append(cleanupWarnings, "Tiny Desk working data could not be fully cleaned")
-			a.log("prepare-cleanup-warning", map[string]any{"error": err.Error()})
+			a.log("prepare-cleanup-warning", map[string]any{"error": cleanupErr.Error()})
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
 	}
 	_ = os.MkdirAll(a.Config.StateDir, 0750)
 	a.appendEvent(map[string]any{"kind": "prepare-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "sessionsReleased": len(local), "notificationDelivered": notificationDelivered, "cleanupWarnings": cleanupWarnings})
@@ -633,7 +639,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	terminated := 0
 	for _, session := range remote {
 		if session["user"] == "labuser" && session["type"] == "x11" {
-			if err := a.helper(ctx, helperSessionRequest(session, true)); err != nil {
+			if err := a.helper(ctx, helperSessionRequest(session, true, a.Config.Application.CloseTimeoutSeconds)); err != nil {
 				return 2, "", "unable to close Tiny Desk session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 			}
 			terminated++
@@ -670,7 +676,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	return 0, "station released", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": rebootRequested, "rebootTimeoutSeconds": rebootTimeout}
 }
 
-func helperSessionRequest(session map[string]any, force bool) map[string]any {
+func helperSessionRequest(session map[string]any, force bool, closeTimeoutSeconds int) map[string]any {
 	remote := "no"
 	switch value := session["remote"].(type) {
 	case bool:
@@ -681,13 +687,14 @@ func helperSessionRequest(session map[string]any, force bool) map[string]any {
 		remote = value
 	}
 	return map[string]any{
-		"operation":     "terminate-session",
-		"sessionId":     fmt.Sprint(session["id"]),
-		"sessionUser":   fmt.Sprint(session["user"]),
-		"sessionRemote": remote,
-		"sessionSeat":   fmt.Sprint(session["seat"]),
-		"sessionType":   fmt.Sprint(session["type"]),
-		"forceSession":  force,
+		"operation":           "terminate-session",
+		"sessionId":           fmt.Sprint(session["id"]),
+		"sessionUser":         fmt.Sprint(session["user"]),
+		"sessionRemote":       remote,
+		"sessionSeat":         fmt.Sprint(session["seat"]),
+		"sessionType":         fmt.Sprint(session["type"]),
+		"forceSession":        force,
+		"closeTimeoutSeconds": closeTimeoutSeconds,
 	}
 }
 
@@ -1298,9 +1305,20 @@ func serviceState(sup host.Supervisor, unit string) string {
 	}
 	return state
 }
+
+func tinyDeskCloseCoordinatesConfigured(cfg config.Config) bool {
+	if len(cfg.Applications) > 0 {
+		return len(cfg.Applications[0].CloseCoordinates) > 0
+	}
+	return len(cfg.Application.CloseCoordinates) > 0
+}
+
 func (a *Agent) tinyDeskConfigurationReady() bool {
 	sessionPath := filepath.Join(tinyDeskSessionHome, ".xsession")
-	if !fileExists(sessionPath) || !executable("/usr/bin/openbox") || !executable("/usr/bin/labstationctl") {
+	if !fileExists(sessionPath) || !executable("/usr/bin/openbox") || !executable("/usr/bin/wmctrl") || !executable("/usr/bin/labstationctl") {
+		return false
+	}
+	if tinyDeskCloseCoordinatesConfigured(a.Config) && !executable("/usr/bin/xdotool") {
 		return false
 	}
 	account, err := user.Lookup("labuser")

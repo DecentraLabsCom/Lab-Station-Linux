@@ -80,3 +80,25 @@ func TestPrepareCleanupClearsSharedEphemeralCategories(t *testing.T) {
 		t.Fatal("shared cleanup matrix does not protect managed application configuration")
 	}
 }
+
+func TestTinyDeskCleanupRejectsSymlinkedWorkDirectoryWithoutTouchingTarget(t *testing.T) {
+	managedRoot := t.TempDir()
+	workHome := filepath.Join(managedRoot, "tiny-desk-home")
+	outside := t.TempDir()
+	protected := filepath.Join(outside, "keep.txt")
+	if err := os.Mkdir(workHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(protected, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workHome, ".cache")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanTinyDeskWorkingDataAt(workHome, managedRoot); err == nil {
+		t.Fatal("Tiny Desk cleaner accepted a symlinked work directory")
+	}
+	if contents, err := os.ReadFile(protected); err != nil || string(contents) != "keep" {
+		t.Fatalf("Tiny Desk cleanup changed data outside its work directory: contents=%q err=%v", contents, err)
+	}
+}

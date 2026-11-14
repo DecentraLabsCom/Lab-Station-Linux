@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,18 +21,19 @@ import (
 )
 
 type request struct {
-	Operation     string `json:"operation"`
-	SessionID     string `json:"sessionId"`
-	Unit          string `json:"unit"`
-	Action        string `json:"action"`
-	SecretID      string `json:"secretId"`
-	SecretValue   string `json:"secretValue"`
-	SessionUser   string `json:"sessionUser"`
-	SessionRemote string `json:"sessionRemote"`
-	SessionSeat   string `json:"sessionSeat"`
-	SessionType   string `json:"sessionType"`
-	ForceSession  bool   `json:"forceSession"`
-	StateDir      string `json:"stateDir"`
+	Operation           string `json:"operation"`
+	SessionID           string `json:"sessionId"`
+	Unit                string `json:"unit"`
+	Action              string `json:"action"`
+	SecretID            string `json:"secretId"`
+	SecretValue         string `json:"secretValue"`
+	SessionUser         string `json:"sessionUser"`
+	SessionRemote       string `json:"sessionRemote"`
+	SessionSeat         string `json:"sessionSeat"`
+	SessionType         string `json:"sessionType"`
+	ForceSession        bool   `json:"forceSession"`
+	CloseTimeoutSeconds int    `json:"closeTimeoutSeconds,omitempty"`
+	StateDir            string `json:"stateDir"`
 }
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
@@ -40,7 +42,18 @@ var loginctlBinary = "/usr/bin/loginctl"
 var systemctlBinary = "/usr/bin/systemctl"
 var rcServiceBinary = "/usr/sbin/rc-service"
 
+const (
+	internalTinyDeskCleanup = "--internal-clean-tiny-desk"
+	internalFMUCleanup      = "--internal-clean-fmu-temp"
+)
+
 func main() {
+	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "--internal-clean-") {
+		if err := executeInternalCleanup(os.Args[1]); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) != 1 {
 		reject("helper accepts JSON input only")
 	}
@@ -114,7 +127,7 @@ func requestOperationClass(operation string) string {
 	switch operation {
 	case "lease-admission":
 		return "admission"
-	case "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "fmu-clean-temp", "secret-set", "secret-clear", "secret-status", "labuser-password-status":
+	case "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "fmu-clean-temp", "tiny-desk-clean", "secret-set", "secret-clear", "secret-status", "labuser-password-status":
 		return "control"
 	default:
 		return ""
@@ -155,7 +168,7 @@ func helperOperationBudget(operation string) time.Duration {
 	switch operation {
 	case "terminate-session":
 		return 25 * time.Second
-	case "service-action", "fmu-clean-temp", "secret-set", "secret-clear":
+	case "service-action", "fmu-clean-temp", "tiny-desk-clean", "secret-set", "secret-clear":
 		return 90 * time.Second
 	case "power-shutdown", "power-hibernate", "power-reboot":
 		return 30 * time.Second
@@ -185,7 +198,7 @@ func executeWithContext(ctx context.Context, request request) error {
 			if request.SessionUser != "labuser" || request.SessionRemote != "yes" || request.SessionType != "x11" {
 				return errors.New("forced termination is limited to remote Tiny Desk sessions")
 			}
-			return exec.CommandContext(ctx, loginctlBinary, "terminate-session", request.SessionID).Run()
+			return closeTinyDeskSession(ctx, request)
 		}
 		if err := exec.CommandContext(ctx, loginctlBinary, "kill-session", "--signal=TERM", request.SessionID).Run(); err != nil {
 			return err
@@ -238,7 +251,9 @@ func executeWithContext(ctx context.Context, request request) error {
 		}
 		return runSystemctl(ctx, request.Action, request.Unit)
 	case "fmu-clean-temp":
-		return cleanFMUTemporaryState(ctx)
+		return runManagedCleanup(ctx, "labstation-fmu", internalFMUCleanup)
+	case "tiny-desk-clean":
+		return runManagedCleanup(ctx, "labuser", internalTinyDeskCleanup)
 	case "secret-set":
 		if request.SecretID != "fmu-internal-token" || !secretValue.MatchString(request.SecretValue) {
 			return errors.New("secret is not valid")
@@ -262,6 +277,82 @@ func executeWithContext(ctx context.Context, request request) error {
 	}
 }
 
+func executeInternalCleanup(operation string) error {
+	username, uid, gid, err := internalCleanupIdentity(operation)
+	if err != nil {
+		return err
+	}
+	if os.Geteuid() != int(uid) || os.Getegid() != int(gid) {
+		return errors.New("internal cleanup must run as its workspace owner")
+	}
+	switch operation {
+	case internalTinyDeskCleanup:
+		if username != "labuser" {
+			return errors.New("Tiny Desk cleanup identity is invalid")
+		}
+		return agent.CleanTinyDeskWorkingData()
+	case internalFMUCleanup:
+		if username != "labstation-fmu" {
+			return errors.New("FMU cleanup identity is invalid")
+		}
+		return cleanFMUTemporaryState(context.Background())
+	default:
+		return errors.New("internal cleanup operation is not allowlisted")
+	}
+}
+
+func internalCleanupIdentity(operation string) (string, uint32, uint32, error) {
+	username := ""
+	switch operation {
+	case internalTinyDeskCleanup:
+		username = "labuser"
+	case internalFMUCleanup:
+		username = "labstation-fmu"
+	default:
+		return "", 0, 0, errors.New("internal cleanup operation is not allowlisted")
+	}
+	account, err := user.Lookup(username)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	uid, uidErr := strconv.ParseUint(account.Uid, 10, 32)
+	gid, gidErr := strconv.ParseUint(account.Gid, 10, 32)
+	if uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
+		return "", 0, 0, errors.New("managed cleanup account is invalid")
+	}
+	return username, uint32(uid), uint32(gid), nil
+}
+
+func managedCleanupCommand(ctx context.Context, username, operation string) (*exec.Cmd, error) {
+	expectedUsername, uid, gid, err := internalCleanupIdentity(operation)
+	if err != nil || username != expectedUsername {
+		return nil, errors.New("managed cleanup identity is not allowlisted")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return commandWithCredentials(ctx, executable, []string{operation}, uid, gid), nil
+}
+
+func commandWithCredentials(ctx context.Context, executable string, args []string, uid, gid uint32) *exec.Cmd {
+	command := exec.CommandContext(ctx, executable, args...)
+	command.Env = []string{"PATH=/usr/bin:/bin"}
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{gid}}}
+	return command
+}
+
+func runManagedCleanup(ctx context.Context, username, operation string) error {
+	if os.Geteuid() != 0 {
+		return errors.New("managed cleanup launcher must run as root")
+	}
+	command, err := managedCleanupCommand(ctx, username, operation)
+	if err != nil {
+		return err
+	}
+	return command.Run()
+}
+
 func cleanFMUTemporaryState(ctx context.Context) error {
 	root := "/var/lib/decentralabs/fmu-executor/fmu-data"
 	for _, path := range []string{
@@ -278,8 +369,19 @@ func cleanFMUTemporaryState(ctx context.Context) error {
 			return errors.New("FMU data path is not a managed directory")
 		}
 	}
+	return cleanFMUTemporaryDirectory(ctx, root)
+}
+
+func cleanFMUTemporaryDirectory(ctx context.Context, root string) error {
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("FMU data path is not a managed directory")
+	}
 	temporary := filepath.Join(root, ".tmp")
-	info, err := os.Lstat(temporary)
+	info, err = os.Lstat(temporary)
 	if os.IsNotExist(err) {
 		return nil
 	}

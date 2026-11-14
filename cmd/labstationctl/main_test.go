@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,9 +12,21 @@ import (
 	"github.com/decentralabs/lab-station-linux/internal/config"
 )
 
+func TestApplicationLaunchEnvironmentForwardsTinyDeskTMPDIR(t *testing.T) {
+	t.Setenv("HOME", "/var/lib/decentralabs/lab-station/tiny-desk-home")
+	t.Setenv("DISPLAY", ":10")
+	t.Setenv("XAUTHORITY", "/var/lib/decentralabs/lab-station/tiny-desk-home/.Xauthority")
+	t.Setenv("TMPDIR", "/var/lib/decentralabs/lab-station/tiny-desk-home/tmp")
+
+	env := strings.Join(applicationLaunchEnvironment(), "\n")
+	if !strings.Contains(env, "TMPDIR=/var/lib/decentralabs/lab-station/tiny-desk-home/tmp") {
+		t.Fatalf("application environment omitted Tiny Desk TMPDIR: %q", env)
+	}
+}
+
 func TestLoadApplicationProfileValidatesProtectedFileAndManagedStateDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app-profile.json")
-	valid := `{"stateDir":"/var/lib/decentralabs/lab-station/data","application":{"id":"lab-app","command":"/opt/lab/apps/demo/run","args":["--safe"],"user":"labuser","closeTimeoutSeconds":15}}`
+	valid := `{"stateDir":"/var/lib/decentralabs/lab-station/data","application":{"id":"lab-app","command":"/opt/lab/apps/demo/run","args":["--safe"],"user":"labuser","closeTimeoutSeconds":15,"closeCoordinates":[394,395]}}`
 	if err := os.WriteFile(path, []byte(valid), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +35,7 @@ func TestLoadApplicationProfileValidatesProtectedFileAndManagedStateDir(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Application.ID != "lab-app" || profile.Application.Command != "/opt/lab/apps/demo/run" || profile.StateDir != "/var/lib/decentralabs/lab-station/data" {
+	if profile.Application.ID != "lab-app" || profile.Application.Command != "/opt/lab/apps/demo/run" || profile.StateDir != "/var/lib/decentralabs/lab-station/data" || len(profile.Application.CloseCoordinates) != 2 || profile.Application.CloseCoordinates[0] != 394 || profile.Application.CloseCoordinates[1] != 395 {
 		t.Fatalf("loaded profile = %#v", profile)
 	}
 
@@ -40,6 +53,24 @@ func TestLoadApplicationProfileValidatesProtectedFileAndManagedStateDir(t *testi
 	}
 	if _, err := loadApplicationProfileOwnedBy(path, owner); err == nil {
 		t.Fatal("application profile outside the managed station state was accepted")
+	}
+}
+
+func TestLoadApplicationProfilePreservesPrimaryWorkspaceCloseCoordinates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app-profile.json")
+	profileJSON := `{"stateDir":"/var/lib/decentralabs/lab-station/data","application":{"user":"labuser","closeTimeoutSeconds":10},"applications":[{"id":"primary","command":"/opt/lab/apps/primary","closeCoordinates":[120,240]},{"id":"secondary","command":"/opt/lab/apps/secondary"}]}`
+	if err := os.WriteFile(path, []byte(profileJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := loadApplicationProfileOwnedBy(path, uint32(os.Geteuid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateApplicationLaunches(profile.Applications); err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.Applications) != 2 || len(profile.Applications[0].CloseCoordinates) != 2 || profile.Applications[0].CloseCoordinates[1] != 240 || len(profile.Applications[1].CloseCoordinates) != 0 {
+		t.Fatalf("workspace close coordinates = %#v", profile.Applications)
 	}
 }
 

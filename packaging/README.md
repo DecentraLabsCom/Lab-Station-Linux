@@ -8,6 +8,8 @@ a release.
 
 `build-packages.sh` packages each portable payload as `.deb` and `.rpm` using
 `fpm`, keeping binaries and defaults identical between archive and packages.
+When the payload contains optional FMU demos, the packages include the staged
+`/var/lib/decentralabs/fmu-executor/fmu-data` assets as well.
 The package manager installs dependencies; `labstationctl setup` applies the
 selected station profile after an operator supplies the Gateway public key.
 For a station that should not install the optional bundled FMU Executor, pass

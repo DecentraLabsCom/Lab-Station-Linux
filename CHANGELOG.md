@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.2] - 2026-11-14
+
+### Added
+- Support configured application close coordinates for Linux single-app and
+  workspace sessions, followed by graceful window-close and process fallbacks.
+
+### Fixed
+- Run Tiny Desk and FMU temporary-data cleanup as the owning service account,
+  avoiding privileged symlink races.
+- Keep cancelled or expired session preparation from activating a reservation
+  lease.
+- Preserve `TMPDIR` for launched applications and allow the systemd service to
+  clean Tiny Desk and already-installed FMU data during upgrades.
+- Include optional FMU demo data in Debian and RPM packages.
+
 ## [0.4.1] - 2026-11-14
 
 ### Fixed

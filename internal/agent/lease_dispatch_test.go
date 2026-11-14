@@ -102,6 +102,36 @@ func TestDispatchV2LeaseJournalIsDurableIdempotentAndRejectsStaleRelease(t *test
 	}
 }
 
+func TestCancelledPrepareCannotActivateReservationLease(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, _ := newTestAgent(t, "dedicated", runtime)
+	a.Config = cfg
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cleanWorkData = func() error {
+		cancel()
+		return context.Canceled
+	}
+	now := time.Now().UTC()
+	var request Request
+	if err := json.Unmarshal([]byte(v2LeaseRequest("cancelled-prepare", "prepare-session", "lease-cancelled", 0, now, now.Add(time.Minute), now.Add(time.Hour))), &request); err != nil {
+		t.Fatal(err)
+	}
+
+	result := a.executeLeaseRequest(ctx, request)
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_OPERATION_CANCELLED" {
+		t.Fatalf("cancelled lease prepare was not rejected: %#v", result)
+	}
+	state, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active == nil || state.Active.State != "recovery-required" {
+		t.Fatalf("cancelled prepare activated or discarded its lease state: %#v", state.Active)
+	}
+}
+
 func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
 	now := time.Now().UTC()

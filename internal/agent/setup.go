@@ -107,7 +107,7 @@ func Setup(args []string) error {
 	}
 	withFMU := *fmuSource != ""
 	if !*noInstall {
-		if err := installDependencies(cfg.Profile, withFMU); err != nil {
+		if err := installDependencies(cfg.Profile, withFMU, tinyDeskCloseCoordinatesConfigured(cfg)); err != nil {
 			return err
 		}
 	}
@@ -257,7 +257,7 @@ func ApplyApplicationProfile(configPath string) error {
 	return supervisor.ServiceAction(serviceUnit(supervisor.Name(), "decentralabs-labstation.service"), "restart")
 }
 
-func installDependencies(profile string, withFMU bool) error {
+func installDependencies(profile string, withFMU, withCloseCoordinates bool) error {
 	manager, _ := host.DetectPackageManager()
 	if manager == "" {
 		return errors.New("no supported package manager was detected; use --no-install-deps and install dependencies manually")
@@ -277,14 +277,17 @@ func installDependencies(profile string, withFMU bool) error {
 		switch manager {
 		case "apt":
 			if name == "debian" || name == "ubuntu" {
-				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "xauth", "openbox")
+				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "xauth", "openbox", "wmctrl")
 			}
 		case "dnf", "yum":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "xorg-x11-xauth", "openbox")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "xorg-x11-xauth", "openbox", "wmctrl")
 		case "zypper":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "xauth", "openbox")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "xauth", "openbox", "wmctrl")
 		case "pacman":
-			packages = append(packages, "xrdp", "xorg-server", "xorg-xauth", "openbox")
+			packages = append(packages, "xrdp", "xorg-server", "xorg-xauth", "openbox", "wmctrl")
+		}
+		if withCloseCoordinates {
+			packages = append(packages, "xdotool")
 		}
 	}
 	var command string
@@ -634,7 +637,8 @@ func writeConfig(path string, cfg config.Config) error {
 	for i, value := range cfg.Application.Args {
 		args[i] = strconv.Quote(value)
 	}
-	content := fmt.Sprintf("[station]\nname = %s\nprofile = %s\nversion = %s\nstate_dir = %s\nconfig_dir = %s\nlog_dir = %s\nmanagement_user = %s\nmanagement_port = %d\nmanagement_public_key = %s\ntransport = %s\nsupervisor = %s\nguard_grace_seconds = %d\nallow_local_session_eviction = %t\n\n[application]\nid = %s\ncommand = %s\nargs = [%s]\nuser = %s\nclose_timeout_seconds = %d\n", strconv.Quote(cfg.Name), strconv.Quote(cfg.Profile), strconv.Quote(cfg.Version), strconv.Quote(cfg.StateDir), strconv.Quote(cfg.ConfigDir), strconv.Quote(cfg.LogDir), strconv.Quote(cfg.ManagementUser), cfg.ManagementPort, strconv.Quote(cfg.ManagementPublicKey), strconv.Quote(cfg.Transport), strconv.Quote(cfg.Supervisor), cfg.GuardGraceSeconds, cfg.AllowLocalSessionEviction, strconv.Quote(cfg.Application.ID), strconv.Quote(cfg.Application.Command), strings.Join(args, ", "), strconv.Quote(cfg.Application.User), cfg.Application.CloseTimeoutSeconds)
+	applicationCoordinates := closeCoordinatesSetting(cfg.Application.CloseCoordinates)
+	content := fmt.Sprintf("[station]\nname = %s\nprofile = %s\nversion = %s\nstate_dir = %s\nconfig_dir = %s\nlog_dir = %s\nmanagement_user = %s\nmanagement_port = %d\nmanagement_public_key = %s\ntransport = %s\nsupervisor = %s\nguard_grace_seconds = %d\nallow_local_session_eviction = %t\n\n[application]\nid = %s\ncommand = %s\nargs = [%s]\nuser = %s\n%sclose_timeout_seconds = %d\n", strconv.Quote(cfg.Name), strconv.Quote(cfg.Profile), strconv.Quote(cfg.Version), strconv.Quote(cfg.StateDir), strconv.Quote(cfg.ConfigDir), strconv.Quote(cfg.LogDir), strconv.Quote(cfg.ManagementUser), cfg.ManagementPort, strconv.Quote(cfg.ManagementPublicKey), strconv.Quote(cfg.Transport), strconv.Quote(cfg.Supervisor), cfg.GuardGraceSeconds, cfg.AllowLocalSessionEviction, strconv.Quote(cfg.Application.ID), strconv.Quote(cfg.Application.Command), strings.Join(args, ", "), strconv.Quote(cfg.Application.User), applicationCoordinates, cfg.Application.CloseTimeoutSeconds)
 	if len(cfg.Applications) > 0 {
 		content += "\n"
 		for _, application := range cfg.Applications {
@@ -642,13 +646,24 @@ func writeConfig(path string, cfg config.Config) error {
 			for index, value := range application.Args {
 				applicationArgs[index] = strconv.Quote(value)
 			}
-			content += fmt.Sprintf("[[application.apps]]\nid = %s\ncommand = %s\nargs = [%s]\n\n", strconv.Quote(application.ID), strconv.Quote(application.Command), strings.Join(applicationArgs, ", "))
+			content += fmt.Sprintf("[[application.apps]]\nid = %s\ncommand = %s\nargs = [%s]\n%s\n", strconv.Quote(application.ID), strconv.Quote(application.Command), strings.Join(applicationArgs, ", "), closeCoordinatesSetting(application.CloseCoordinates))
 		}
 	}
 	if err := atomicWrite(path, []byte(content), 0640); err != nil {
 		return err
 	}
 	return os.Chown(path, 0, lookupGroup("labstation"))
+}
+
+func closeCoordinatesSetting(coordinates []int) string {
+	if len(coordinates) == 0 {
+		return ""
+	}
+	values := make([]string, len(coordinates))
+	for index, coordinate := range coordinates {
+		values[index] = strconv.Itoa(coordinate)
+	}
+	return fmt.Sprintf("close_coordinates = [%s]\n", strings.Join(values, ", "))
 }
 
 func writeApplicationProfile(cfg config.Config) error {
@@ -1534,7 +1549,14 @@ ReadWritePaths=/var/lib/decentralabs/lab-station/data /var/log/decentralabs/lab-
 [Install]
 WantedBy=multi-user.target
 `
-		unit = strings.ReplaceAll(unit, "ReadWritePaths=/var/lib/decentralabs/lab-station/data /var/log/decentralabs/lab-station /etc/decentralabs/lab-station/secrets", "ReadWritePaths="+cfg.StateDir+" "+cfg.LogDir+" /etc/decentralabs/lab-station/secrets")
+		readWritePaths := []string{cfg.StateDir, cfg.LogDir, "/etc/decentralabs/lab-station/secrets"}
+		if cfg.Profile != "fmu-only" {
+			readWritePaths = append(readWritePaths, tinyDeskWorkHome)
+		}
+		if withFMU || fileExists("/opt/decentralabs/fmu-executor/app/main.py") {
+			readWritePaths = append(readWritePaths, "/var/lib/decentralabs/fmu-executor/fmu-data")
+		}
+		unit = strings.ReplaceAll(unit, "ReadWritePaths=/var/lib/decentralabs/lab-station/data /var/log/decentralabs/lab-station /etc/decentralabs/lab-station/secrets", "ReadWritePaths="+strings.Join(readWritePaths, " "))
 		fmu := `[Unit]
 Description=DecentraLabs FMU Executor
 After=network.target

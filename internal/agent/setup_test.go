@@ -263,6 +263,10 @@ func TestSetupEndToEnd(t *testing.T) {
 	if _, err := os.Stat("/etc/systemd/system/decentralabs-labstation-fmu.service"); !os.IsNotExist(err) {
 		t.Fatalf("FMU service exists without an FMU Executor source: %v", err)
 	}
+	stationUnit, err := os.ReadFile("/etc/systemd/system/decentralabs-labstation.service")
+	if err != nil || !strings.Contains(string(stationUnit), "ReadWritePaths=/var/lib/decentralabs/lab-station/data /var/log/decentralabs/lab-station /etc/decentralabs/lab-station/secrets "+tinyDeskWorkHome) {
+		t.Fatalf("systemd sandbox does not allow Tiny Desk cleanup: %q, %v", stationUnit, err)
+	}
 	args := []string{
 		"--profile=hybrid",
 		"--management-public-key=" + key,
@@ -376,6 +380,17 @@ func TestSetupEndToEnd(t *testing.T) {
 	fmuService, fmuServiceErr := os.ReadFile("/etc/systemd/system/decentralabs-labstation-fmu.service")
 	if fmuServiceErr != nil || !strings.Contains(string(fmuService), "Environment=FMU_MAX_SIMULATION_PARAMETERS=256") {
 		t.Errorf("systemd FMU service omitted the shared parameter ceiling: %q, %v", fmuService, fmuServiceErr)
+	}
+	stationUnit, err = os.ReadFile("/etc/systemd/system/decentralabs-labstation.service")
+	if err != nil || !strings.Contains(string(stationUnit), " /var/lib/decentralabs/fmu-executor/fmu-data\n") {
+		t.Errorf("systemd sandbox does not allow queued FMU temp cleanup: %q, %v", stationUnit, err)
+	}
+	if err := Setup(noFMUArgs); err != nil {
+		t.Fatalf("systemd upgrade without an FMU source failed: %v", err)
+	}
+	stationUnit, err = os.ReadFile("/etc/systemd/system/decentralabs-labstation.service")
+	if err != nil || !strings.Contains(string(stationUnit), " /var/lib/decentralabs/fmu-executor/fmu-data\n") {
+		t.Errorf("systemd upgrade removed FMU cleanup access when the FMU source was not resupplied: %q, %v", stationUnit, err)
 	}
 	if info, err := os.Stat("/var/lib/decentralabs/fmu-executor/fmu-data"); err != nil || info.Mode().Perm() != 0o750 {
 		t.Errorf("FMU state directory is not private to the FMU account: %v, %v", info, err)

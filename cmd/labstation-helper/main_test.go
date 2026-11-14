@@ -22,6 +22,47 @@ func TestDecodeRequestAcceptsOneBoundedStrictObject(t *testing.T) {
 	}
 }
 
+func TestInternalCleanupRejectsUnlistedOperations(t *testing.T) {
+	if _, _, _, err := internalCleanupIdentity("--internal-clean-anything"); err == nil {
+		t.Fatal("internal cleanup accepted an unlisted operation")
+	}
+}
+
+func TestManagedCleanupCommandUsesOnlyTargetAccountCredentials(t *testing.T) {
+	command := commandWithCredentials(context.Background(), "/usr/bin/labstation-helper", []string{internalTinyDeskCleanup}, 1234, 2345)
+	credentials := command.SysProcAttr.Credential
+	if credentials == nil || credentials.Uid != 1234 || credentials.Gid != 2345 {
+		t.Fatalf("cleanup child credentials = %#v", credentials)
+	}
+	if len(credentials.Groups) != 1 || credentials.Groups[0] != 2345 {
+		t.Fatalf("cleanup child supplementary groups = %#v", credentials.Groups)
+	}
+	if strings.Join(command.Env, ",") != "PATH=/usr/bin:/bin" {
+		t.Fatalf("cleanup child inherited an unexpected environment: %#v", command.Env)
+	}
+	if command.SysProcAttr.Cloneflags != 0 || command.SysProcAttr.Credential.NoSetGroups {
+		t.Fatal("cleanup child did not use explicit group credentials")
+	}
+}
+
+func TestFMUCleanupRejectsSymlinkedTemporaryDirectory(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	protected := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(protected, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, ".tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanFMUTemporaryDirectory(context.Background(), root); err == nil {
+		t.Fatal("FMU cleaner accepted a symlinked temporary directory")
+	}
+	if contents, err := os.ReadFile(protected); err != nil || string(contents) != "keep" {
+		t.Fatalf("FMU cleaner changed data outside its temporary directory: contents=%q err=%v", contents, err)
+	}
+}
+
 func TestDecodeRequestRejectsMalformedUnknownTrailingAndOversizedInput(t *testing.T) {
 	tests := map[string][]byte{
 		"malformed": []byte(`{"operation":`),
@@ -49,6 +90,7 @@ func TestHelperCallerMatrixSeparatesAdmissionControlAndSecretOperations(t *testi
 		{"labuser", "secret-status", false},
 		{"labuser", "terminate-session", false},
 		{"labstationd", "terminate-session", true},
+		{"labstationd", "tiny-desk-clean", true},
 		{"labstationd", "secret-status", true},
 		{"labstation-ops", "secret-set", false},
 		{"labstation-fmu", "service-action", false},

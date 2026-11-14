@@ -17,4 +17,4 @@ id = "lab-app"
 command = "/opt/lab/apps/controller"
 args = ["--remote-session"]
 user = "labuser"
-close_timeout_seconds = 15
+close_timeout_seconds = 10

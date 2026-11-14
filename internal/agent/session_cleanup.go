@@ -44,6 +44,12 @@ func cleanTinyDeskWorkingData() error {
 	return cleanTinyDeskWorkingDataAt(tinyDeskWorkHome, managedRoot)
 }
 
+// CleanTinyDeskWorkingData clears fixed Tiny Desk work directories. Callers
+// must run it as the labuser owner of the workspace.
+func CleanTinyDeskWorkingData() error {
+	return cleanTinyDeskWorkingData()
+}
+
 func cleanTinyDeskWorkingDataAt(workHome, managedRoot string) error {
 	root := filepath.Clean(workHome)
 	managedRoot = filepath.Clean(managedRoot)

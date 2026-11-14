@@ -69,7 +69,11 @@ under `/opt/lab/apps`; the root-managed station configuration chooses which
 ones are available in the session. In a multi-application session, use
 `Alt+Tab` / `Alt+Shift+Tab` to switch windows and `Alt+F4` to close one. See
 the [operator runbook](docs/operator-runbook.md#configure-tiny-desk-applications)
-for configuration and update steps.
+for configuration and update steps. Reservation release requests a normal X11
+window close for each configured app before signaling any remaining processes.
+It can first click a configured button in the single app or primary multi-app
+window when that window is active. Multi-app closes share a 10-second maximum
+deadline.
 
 ## Lab Gateway integration
 

@@ -117,6 +117,32 @@ func newTestAgent(t *testing.T, profile string, runtime *fakeRuntime) (*Agent, *
 	return a, calls
 }
 
+func TestTinyDeskCloseCoordinatesConfiguredForSingleAndPrimaryMultiAppOnly(t *testing.T) {
+	if tinyDeskCloseCoordinatesConfigured(config.Defaults()) {
+		t.Fatal("default single-app configuration unexpectedly has close coordinates")
+	}
+
+	single := config.Defaults()
+	single.Application.CloseCoordinates = []int{120, 240}
+	if !tinyDeskCloseCoordinatesConfigured(single) {
+		t.Fatal("single-app close coordinates were not detected")
+	}
+
+	multi := config.Defaults()
+	multi.Applications = []config.ApplicationLaunch{
+		{ID: "primary", Command: "/opt/lab/apps/primary", CloseCoordinates: []int{120, 240}},
+		{ID: "secondary", Command: "/opt/lab/apps/secondary"},
+	}
+	if !tinyDeskCloseCoordinatesConfigured(multi) {
+		t.Fatal("primary multi-app close coordinates were not detected")
+	}
+	multi.Applications[0].CloseCoordinates = nil
+	multi.Applications[1].CloseCoordinates = []int{20, 30}
+	if tinyDeskCloseCoordinatesConfigured(multi) {
+		t.Fatal("secondary app coordinates were treated as workspace close coordinates")
+	}
+}
+
 func TestValidateCommandAllowlistAndInjectionBoundary(t *testing.T) {
 	allowed := []struct {
 		command string
@@ -369,6 +395,35 @@ func TestPrepareSessionFailsClosedWhenSessionInventoryUnavailable(t *testing.T) 
 	}
 }
 
+func TestPrepareRunsTinyDeskCleanupThroughPrivilegedHelper(t *testing.T) {
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, sessionsOK: true}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+	a.cleanWorkData = nil
+
+	result := a.Execute(context.Background(), "prepare-cleanup", "prepare-session", nil)
+	if result.ExitCode != 0 {
+		t.Fatalf("prepare failed while exercising Tiny Desk cleanup routing: %#v", result)
+	}
+	if len(*calls) != 1 || (*calls)[0]["operation"] != "tiny-desk-clean" {
+		t.Fatalf("Tiny Desk cleanup did not use the privileged helper: %#v", *calls)
+	}
+}
+
+func TestPrepareCancellationDuringCleanupCannotSucceed(t *testing.T) {
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, sessionsOK: true}
+	a, _ := newTestAgent(t, "hybrid", runtime)
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cleanWorkData = func() error {
+		cancel()
+		return context.Canceled
+	}
+
+	result := a.Execute(ctx, "prepare-cancelled", "prepare-session", nil)
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_OPERATION_CANCELLED" {
+		t.Fatalf("cancelled preparation was reported as successful or warning-only: %#v", result)
+	}
+}
+
 func TestGuardTargetsOnlyRequestedLocalUserAndRecordsOutcome(t *testing.T) {
 	runtime := &fakeRuntime{
 		supervisor: fakeSupervisor{name: "systemd"},
@@ -425,6 +480,9 @@ func TestReleaseTerminatesOnlyTinyDeskAndNeverRebootsWhileLocalUsersRemain(t *te
 	}
 	if len(*calls) != 1 || (*calls)[0]["sessionId"] != "rdp-1" || (*calls)[0]["operation"] != "terminate-session" {
 		t.Fatalf("only the labuser X11 session may be terminated: %#v", *calls)
+	}
+	if (*calls)[0]["closeTimeoutSeconds"] != float64(10) {
+		t.Fatalf("release did not pass the shared 10 second close deadline: %#v", *calls)
 	}
 	if _, ok := (*calls)[0]["action"]; ok {
 		t.Fatal("management SSH or local user session reached privileged action")

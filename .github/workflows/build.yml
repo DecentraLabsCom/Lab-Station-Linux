@@ -185,3 +185,17 @@ jobs:
           test "$(dpkg-deb -f "dist/lab-station-linux_${version}_arm64.deb" Architecture)" = arm64
           test "$(rpm -qp --queryformat '%{ARCH}' "dist/lab-station-linux-${version}.x86_64.rpm")" = x86_64
           test "$(rpm -qp --queryformat '%{ARCH}' "dist/lab-station-linux-${version}.aarch64.rpm")" = aarch64
+          for package in "dist/lab-station-linux_${version}_amd64.deb" "dist/lab-station-linux_${version}_arm64.deb"; do
+            dpkg-deb --contents "$package" | grep -F 'var/lib/decentralabs/fmu-executor/fmu-data/Reference-FMUs.LICENSE.txt'
+          done
+          for package in "dist/lab-station-linux-${version}.x86_64.rpm" "dist/lab-station-linux-${version}.aarch64.rpm"; do
+            rpm -qlp "$package" | grep -F '/var/lib/decentralabs/fmu-executor/fmu-data/Reference-FMUs.LICENSE.txt'
+          done
+          for asset in SmartWarehouseCell.fmu SmartWarehouseCell.glb SmartWarehouseCell.webapp.zip SmartWarehouseCell.LICENSE.txt; do
+            dpkg-deb --contents "dist/lab-station-linux_${version}_amd64.deb" | grep -F "var/lib/decentralabs/fmu-executor/fmu-data/$asset"
+            rpm -qlp "dist/lab-station-linux-${version}.x86_64.rpm" | grep -F "/var/lib/decentralabs/fmu-executor/fmu-data/$asset"
+          done
+          dpkg-deb --contents "dist/lab-station-linux_${version}_amd64.deb" | grep -F 'var/lib/decentralabs/fmu-executor/fmu-data/BouncingBall.fmu'
+          rpm -qlp "dist/lab-station-linux-${version}.x86_64.rpm" | grep -F '/var/lib/decentralabs/fmu-executor/fmu-data/BouncingBall.fmu'
+          dpkg-deb --contents "dist/lab-station-linux_${version}_arm64.deb" | grep -F 'var/lib/decentralabs/fmu-executor/fmu-data/Stair.fmu'
+          rpm -qlp "dist/lab-station-linux-${version}.aarch64.rpm" | grep -F '/var/lib/decentralabs/fmu-executor/fmu-data/Stair.fmu'

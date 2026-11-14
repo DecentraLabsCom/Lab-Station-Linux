@@ -154,7 +154,10 @@ func launchApplication(profile applicationProfile) error {
 		if profile.Application.Command == "" {
 			return errors.New("no application is configured")
 		}
-		applications = []config.ApplicationLaunch{{ID: profile.Application.ID, Command: profile.Application.Command, Args: profile.Application.Args}}
+		if err := config.ValidateCloseCoordinates(profile.Application.CloseCoordinates); err != nil {
+			return err
+		}
+		applications = []config.ApplicationLaunch{{ID: profile.Application.ID, Command: profile.Application.Command, Args: profile.Application.Args, CloseCoordinates: profile.Application.CloseCoordinates}}
 	}
 	if !legacyApplication {
 		if err := config.ValidateApplicationLaunches(applications); err != nil {
@@ -166,8 +169,9 @@ func launchApplication(profile applicationProfile) error {
 		return fmt.Errorf("application catalog is unavailable")
 	}
 	type launch struct {
-		command string
-		args    []string
+		command          string
+		args             []string
+		closeCoordinates []int
 	}
 	launches := make([]launch, 0, len(applications))
 	for _, application := range applications {
@@ -191,21 +195,23 @@ func launchApplication(profile applicationProfile) error {
 		if statErr != nil || info.IsDir() || info.Mode()&0111 == 0 {
 			return fmt.Errorf("application %s is not executable", application.ID)
 		}
-		launches = append(launches, launch{command: resolved, args: application.Args})
+		launches = append(launches, launch{command: resolved, args: application.Args, closeCoordinates: application.CloseCoordinates})
 	}
 	children := make([]*exec.Cmd, 0, len(launches))
 	for _, item := range launches {
 		child := exec.Command(item.command, item.args...)
-		child.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "HOME=" + os.Getenv("HOME"), "DISPLAY=" + os.Getenv("DISPLAY"), "XAUTHORITY=" + os.Getenv("XAUTHORITY")}
+		child.Env = applicationLaunchEnvironment()
 		child.Stdin = os.Stdin
 		child.Stdout = os.Stdout
 		child.Stderr = os.Stderr
 		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := child.Start(); err != nil {
+			processGroupIDs := make([]int, 0, len(children))
 			for _, started := range children {
-				terminateProcessGroup(started.Process.Pid, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds))
-				_ = started.Wait()
+				processGroupIDs = append(processGroupIDs, started.Process.Pid)
+				go func(started *exec.Cmd) { _ = started.Wait() }(started)
 			}
+			closeApplicationProcessGroups(processGroupIDs, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds), launches[0].closeCoordinates)
 			return err
 		}
 		children = append(children, child)
@@ -219,7 +225,7 @@ func launchApplication(profile applicationProfile) error {
 		go func(child *exec.Cmd) { results <- waitResult{child: child, err: child.Wait()} }(child)
 	}
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
 	defer signal.Stop(signals)
 	remaining := len(children)
 	var firstErr error
@@ -227,17 +233,24 @@ func launchApplication(profile applicationProfile) error {
 		select {
 		case result := <-results:
 			remaining--
-			terminateProcessGroup(result.child.Process.Pid, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds))
+			go terminateProcessGroup(result.child.Process.Pid, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds))
 			if result.err != nil && firstErr == nil {
 				firstErr = result.err
 			}
 		case <-signals:
+			processGroupIDs := make([]int, 0, len(children))
 			for _, child := range children {
-				terminateProcessGroup(child.Process.Pid, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds))
+				processGroupIDs = append(processGroupIDs, child.Process.Pid)
 			}
-			for remaining > 0 {
-				<-results
-				remaining--
+			closeApplicationProcessGroups(processGroupIDs, applicationCloseTimeout(profile.Application.CloseTimeoutSeconds), launches[0].closeCoordinates)
+			reapDeadline := time.Now().Add(250 * time.Millisecond)
+			for remaining > 0 && time.Now().Before(reapDeadline) {
+				select {
+				case <-results:
+					remaining--
+				case <-time.After(time.Until(reapDeadline)):
+					remaining = 0
+				}
 			}
 			return nil
 		}
@@ -246,12 +259,19 @@ func launchApplication(profile applicationProfile) error {
 	return err
 }
 
-func applicationCloseTimeout(seconds int) time.Duration {
-	timeout := time.Duration(seconds) * time.Second
-	if timeout < time.Second || timeout > 5*time.Minute {
-		timeout = 15 * time.Second
+func applicationLaunchEnvironment() []string {
+	env := []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "HOME=" + os.Getenv("HOME"), "DISPLAY=" + os.Getenv("DISPLAY"), "XAUTHORITY=" + os.Getenv("XAUTHORITY")}
+	if tempDir := os.Getenv("TMPDIR"); tempDir != "" {
+		env = append(env, "TMPDIR="+tempDir)
 	}
-	return timeout
+	return env
+}
+
+func applicationCloseTimeout(seconds int) time.Duration {
+	if seconds < 1 || seconds > 10 {
+		return 10 * time.Second
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func terminateProcessGroup(pid int, grace time.Duration) {

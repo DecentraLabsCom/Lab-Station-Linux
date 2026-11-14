@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.4.5] - 2026-11-14
+
+### Fixed
+- Route privileged station operations through a root-owned helper socket with
+  peer credential checks so systemd's `NoNewPrivileges` hardening does not
+  prevent watchdog cleanup.
+- Release unreserved Tiny Desk sessions after 10 seconds without an RDP client.
+
 ## [0.4.4] - 2026-11-14
 
 ### Added

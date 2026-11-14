@@ -45,12 +45,13 @@ else
     if [ -e "$WAKE_CONFIG" ]; then echo 'Wake-on-LAN config changed after setup; preserved it and its service files.' >&2; fi
 fi
 systemctl disable --now decentralabs-labstation.service 2>/dev/null || true
+systemctl disable --now decentralabs-labstation-helper.service 2>/dev/null || true
 systemctl disable --now decentralabs-labstation-fmu.service 2>/dev/null || true
 rc-service decentralabs-labstation stop 2>/dev/null || true
 rc-service decentralabs-labstation-fmu stop 2>/dev/null || true
 rc-update del decentralabs-labstation default 2>/dev/null || true
 rc-update del decentralabs-labstation-fmu default 2>/dev/null || true
-rm -f /etc/systemd/system/decentralabs-labstation.service /etc/systemd/system/decentralabs-labstation-fmu.service
+rm -f /etc/systemd/system/decentralabs-labstation.service /etc/systemd/system/decentralabs-labstation-helper.service /etc/systemd/system/decentralabs-labstation-fmu.service
 rm -f /etc/init.d/decentralabs-labstation /etc/init.d/decentralabs-labstation-fmu
 systemctl daemon-reload 2>/dev/null || true
 rm -f /etc/ssh/sshd_config.d/90-decentralabs-lab-station.conf

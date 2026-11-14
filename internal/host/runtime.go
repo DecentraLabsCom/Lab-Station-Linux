@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/decentralabs/lab-station-linux/internal/privileged"
 )
 
 type Runtime interface {
@@ -225,8 +227,19 @@ func (LinuxRuntime) UserPasswordConfigured(username string) bool {
 func labuserPasswordConfiguredByHelper() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	request := []byte(`{"operation":"labuser-password-status"}` + "\n")
+	connected, output, err := privileged.Call(ctx, request)
+	if connected {
+		if err != nil {
+			return false
+		}
+		var status struct {
+			Configured bool `json:"configured"`
+		}
+		return json.Unmarshal(output, &status) == nil && status.Configured
+	}
 	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
-	cmd.Stdin = strings.NewReader(`{"operation":"labuser-password-status"}` + "\n")
+	cmd.Stdin = strings.NewReader(string(request))
 	out, err := cmd.Output()
 	if err != nil {
 		return false

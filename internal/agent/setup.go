@@ -1526,7 +1526,8 @@ func installSupervisor(cfg config.Config, configPath string, withFMU bool) error
 	if sup := host.DetectSupervisor(); sup != nil && sup.Name() == "systemd" {
 		unit := `[Unit]
 Description=DecentraLabs Lab Station daemon
-After=network.target
+After=network.target decentralabs-labstation-helper.service
+Wants=decentralabs-labstation-helper.service
 
 [Service]
 Type=simple
@@ -1557,6 +1558,43 @@ WantedBy=multi-user.target
 			readWritePaths = append(readWritePaths, "/var/lib/decentralabs/fmu-executor/fmu-data")
 		}
 		unit = strings.ReplaceAll(unit, "ReadWritePaths=/var/lib/decentralabs/lab-station/data /var/log/decentralabs/lab-station /etc/decentralabs/lab-station/secrets", "ReadWritePaths="+strings.Join(readWritePaths, " "))
+		helperReadWritePaths := []string{"/etc/decentralabs/lab-station/secrets"}
+		if cfg.Profile != "fmu-only" {
+			helperReadWritePaths = append(helperReadWritePaths, tinyDeskWorkHome)
+		}
+		if withFMU || fileExists("/opt/decentralabs/fmu-executor/app/main.py") {
+			helperReadWritePaths = append(helperReadWritePaths, "/var/lib/decentralabs/fmu-executor/fmu-data")
+		}
+		helperUnit := `[Unit]
+Description=DecentraLabs Lab Station privileged helper
+After=local-fs.target
+Before=decentralabs-labstation.service
+
+[Service]
+Type=simple
+User=root
+Group=labstation
+ExecStart=/usr/lib/decentralabs/lab-station/labstation-helper-bin --serve
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=decentralabs-labstation-helper
+RuntimeDirectoryMode=0750
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/etc/decentralabs/lab-station/secrets
+
+[Install]
+WantedBy=multi-user.target
+`
+		helperUnit = strings.ReplaceAll(helperUnit, "ReadWritePaths=/etc/decentralabs/lab-station/secrets", "ReadWritePaths="+strings.Join(helperReadWritePaths, " "))
 		fmu := `[Unit]
 Description=DecentraLabs FMU Executor
 After=network.target
@@ -1586,6 +1624,9 @@ ReadWritePaths=/var/lib/decentralabs/fmu-executor /opt/decentralabs/fmu-executor
 WantedBy=multi-user.target
 `
 		if err := atomicWrite("/etc/systemd/system/decentralabs-labstation.service", []byte(unit), 0644); err != nil {
+			return err
+		}
+		if err := atomicWrite("/etc/systemd/system/decentralabs-labstation-helper.service", []byte(helperUnit), 0644); err != nil {
 			return err
 		}
 		if withFMU {
@@ -1645,6 +1686,9 @@ func startManagementServices(cfg config.Config) error {
 			if err := exec.Command("systemctl", "enable", "--now", "decentralabs-labstation-wol.service").Run(); err != nil {
 				return errors.New("Wake-on-LAN persistence service could not be enabled")
 			}
+		}
+		if err := exec.Command("systemctl", "enable", "--now", "decentralabs-labstation-helper.service").Run(); err != nil {
+			return fmt.Errorf("privileged helper service could not be enabled: %w", err)
 		}
 		if err := exec.Command("systemctl", "enable", "--now", "decentralabs-labstation.service").Run(); err != nil {
 			return fmt.Errorf("labstationd could not be enabled: %w", err)

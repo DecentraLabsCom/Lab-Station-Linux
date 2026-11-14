@@ -197,8 +197,8 @@ func TestUnreservedTinyDeskDisconnectReleasesAfterGrace(t *testing.T) {
 	}
 	a, calls := newTestAgent(t, "dedicated", runtime)
 	grace := unreservedTinyDeskDisconnectGrace
-	if grace != time.Minute {
-		t.Fatalf("unreserved Tiny Desk disconnect grace = %s, want one minute", grace)
+	if grace != 10*time.Second {
+		t.Fatalf("unreserved Tiny Desk disconnect grace = %s, want ten seconds", grace)
 	}
 	start := time.Now().UTC()
 
@@ -265,20 +265,20 @@ func TestUnreservedTinyDeskDisconnectTimerResetsWhenClientReconnects(t *testing.
 		t.Fatal(err)
 	}
 	runtime.rdpConnected = true
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(30*time.Second), grace); err != nil {
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(5*time.Second), grace); err != nil {
 		t.Fatal(err)
 	}
 	runtime.rdpConnected = false
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(60*time.Second), grace); err != nil {
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(20*time.Second), grace); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(119*time.Second), grace); err != nil {
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(29*time.Second), grace); err != nil {
 		t.Fatal(err)
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("reconnected Tiny Desk session was released before a full new grace period: %#v", *calls)
 	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(120*time.Second), grace); err != nil {
+	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(30*time.Second), grace); err != nil {
 		t.Fatal(err)
 	}
 	if len(*calls) != 1 {

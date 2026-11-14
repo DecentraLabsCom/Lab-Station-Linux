@@ -605,7 +605,7 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 	return nil
 }
 
-const unreservedTinyDeskDisconnectGrace = time.Minute
+const unreservedTinyDeskDisconnectGrace = 10 * time.Second
 
 func (a *Agent) enforceUnreservedTinyDeskDisconnect(ctx context.Context) error {
 	return a.enforceUnreservedTinyDeskDisconnectAt(ctx, time.Now().UTC(), unreservedTinyDeskDisconnectGrace)

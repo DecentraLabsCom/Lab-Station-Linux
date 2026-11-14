@@ -10,6 +10,9 @@ for name in labstation-dispatcher-bin labstation-helper-bin; do
     test -f "$STATE/$name" || { echo "Missing previous binary: $name" >&2; exit 2; }
 done
 systemctl stop decentralabs-labstation.service 2>/dev/null || rc-service decentralabs-labstation stop 2>/dev/null || true
+systemctl disable --now decentralabs-labstation-helper.service 2>/dev/null || true
+rm -f /etc/systemd/system/decentralabs-labstation-helper.service
+systemctl daemon-reload 2>/dev/null || true
 cp -p "$STATE/labstationctl" /usr/bin/labstationctl
 cp -p "$STATE/labstationd" /usr/bin/labstationd
 cp -p "$STATE/labstation-dispatcher-bin" /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin

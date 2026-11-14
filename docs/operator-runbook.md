@@ -168,6 +168,11 @@ during cleanup, the operation returns `STATION_OPERATION_CANCELLED` and its
 lease cannot become active. Other cleanup errors remain visible as preparation
 warnings.
 
+On systemd hosts, privileged control operations run through the separate
+`decentralabs-labstation-helper.service`. Its Unix socket accepts requests only
+from `labstationd` (or root); the helper still validates each operation and
+session identity. This keeps the main daemon's privilege hardening in place.
+
 When a Tiny Desk session is released, Lab Station first tries the configured
 coordinate click for the single app or the first app in a multi-app session.
 It does so only when exactly one top-level window belongs to that app process
@@ -194,7 +199,7 @@ sessions, not Wayland desktops.
 Closing the browser or Guacamole tunnel does not release the XRDP session
 immediately. If no reservation or demo lease is active, the daemon releases the
 managed Tiny Desk session after its RDP client has remained disconnected for
-one minute. Reconnecting during that minute resets the timer. The watchdog
+10 seconds. Reconnecting during that grace period resets the timer. The watchdog
 fails closed if it cannot verify the RDP connection or session state. With an
 active reservation or demo lease, this automatic cleanup is suspended so the
 user can reconnect while authorized; the controlled application close runs
@@ -266,7 +271,9 @@ On the host, inspect local status and the service without printing secrets:
 ```sh
 sudo labstationctl status-json
 sudo systemctl status decentralabs-labstation.service
+sudo systemctl status decentralabs-labstation-helper.service
 sudo journalctl -u decentralabs-labstation.service --since today
+sudo journalctl -u decentralabs-labstation-helper.service --since today
 ```
 
 On OpenRC, use `rc-service decentralabs-labstation status` and inspect

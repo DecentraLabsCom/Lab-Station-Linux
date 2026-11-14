@@ -30,6 +30,7 @@ chmod 0700 "$STATE" "$STATE/previous"
 # saving the old binaries so upgrades do not leave a mixed or partial payload.
 if command -v systemctl >/dev/null 2>&1 && systemctl cat decentralabs-labstation.service >/dev/null 2>&1; then
     systemctl stop decentralabs-labstation.service
+    systemctl stop decentralabs-labstation-helper.service 2>/dev/null || true
 elif command -v rc-service >/dev/null 2>&1 && [ -x /etc/init.d/decentralabs-labstation ]; then
     rc-service decentralabs-labstation stop || true
 fi

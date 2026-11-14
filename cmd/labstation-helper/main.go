@@ -48,6 +48,13 @@ const (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--serve" {
+		if err := servePrivilegedSocket(); err != nil {
+			fmt.Fprintf(os.Stderr, "privileged helper service failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "--internal-clean-") {
 		if err := executeInternalCleanup(os.Args[1]); err != nil {
 			os.Exit(1)
@@ -64,28 +71,35 @@ func main() {
 	if err := authorizeCaller(request.Operation); err != nil {
 		reject("helper caller is not authorized for this operation")
 	}
-	if request.Operation == "lease-admission" {
+	output, err := executeRequest(request)
+	if err != nil {
+		reject(err.Error())
+	}
+	if len(output) > 0 {
+		_, _ = os.Stdout.Write(append(output, '\n'))
+	}
+}
+
+func executeRequest(request request) ([]byte, error) {
+	switch request.Operation {
+	case "lease-admission":
 		if err := agent.CheckLeaseAdmission(request.StateDir, time.Now().UTC()); err != nil {
-			reject("no active reservation permits application access")
+			return nil, errors.New("no active reservation permits application access")
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"allowed": true})
-		return
-	}
-	if request.Operation == "secret-status" {
-		configured := secretConfigured()
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"configured": configured})
-		return
-	}
-	if request.Operation == "labuser-password-status" {
+		return json.Marshal(map[string]bool{"allowed": true})
+	case "secret-status":
+		return json.Marshal(map[string]bool{"configured": secretConfigured()})
+	case "labuser-password-status":
 		configured, err := labuserPasswordConfigured()
 		if err != nil {
-			reject("unable to read labuser password status")
+			return nil, errors.New("unable to read labuser password status")
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]bool{"configured": configured})
-		return
-	}
-	if err := execute(request); err != nil {
-		reject("privileged operation rejected")
+		return json.Marshal(map[string]bool{"configured": configured})
+	default:
+		if err := execute(request); err != nil {
+			return nil, errors.New("privileged operation rejected")
+		}
+		return nil, nil
 	}
 }
 

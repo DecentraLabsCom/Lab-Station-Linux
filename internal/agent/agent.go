@@ -21,6 +21,7 @@ import (
 
 	"github.com/decentralabs/lab-station-linux/internal/config"
 	"github.com/decentralabs/lab-station-linux/internal/host"
+	"github.com/decentralabs/lab-station-linux/internal/privileged"
 )
 
 type Agent struct {
@@ -1138,10 +1139,20 @@ func (a *Agent) helper(ctx context.Context, request map[string]any) error {
 	if a.runHelper != nil {
 		return a.runHelper(ctx, encoded)
 	}
+	connected, _, socketErr := privileged.Call(ctx, encoded)
+	if connected {
+		return socketErr
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
 	cmd.Stdin = strings.NewReader(string(encoded))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if socketErr != nil {
+			return fmt.Errorf("privileged helper socket unavailable (%v); sudo fallback failed: %s", socketErr, strings.TrimSpace(string(output)))
+		}
 		return fmt.Errorf("helper rejected operation: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
@@ -1154,16 +1165,26 @@ func (a *Agent) fmuSecretConfigured() bool {
 	request := []byte(`{"operation":"secret-status"}` + "\n")
 	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	connected, output, err := privileged.Call(probeCtx, request)
+	if connected {
+		if err != nil {
+			return false
+		}
+		var status struct {
+			Configured bool `json:"configured"`
+		}
+		return json.Unmarshal(output, &status) == nil && status.Configured
+	}
 	cmd := exec.CommandContext(probeCtx, "/usr/bin/sudo", "-n", "/usr/lib/decentralabs/lab-station/labstation-helper")
 	cmd.Stdin = strings.NewReader(string(request))
-	output, err := cmd.Output()
+	fallbackOutput, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 	var status struct {
 		Configured bool `json:"configured"`
 	}
-	return json.Unmarshal(output, &status) == nil && status.Configured
+	return json.Unmarshal(fallbackOutput, &status) == nil && status.Configured
 }
 
 func (a *Agent) lockState() (*os.File, error) {

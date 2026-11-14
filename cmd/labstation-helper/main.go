@@ -195,8 +195,8 @@ func executeWithContext(ctx context.Context, request request) error {
 			return errors.New("session identity changed before termination")
 		}
 		if request.ForceSession {
-			if request.SessionUser != "labuser" || request.SessionRemote != "yes" || request.SessionType != "x11" {
-				return errors.New("forced termination is limited to remote Tiny Desk sessions")
+			if !isTinyDeskSession(request.SessionUser, request.SessionRemote, request.SessionSeat, request.SessionType) {
+				return errors.New("forced termination is limited to managed Tiny Desk sessions")
 			}
 			return closeTinyDeskSession(ctx, request)
 		}
@@ -430,9 +430,17 @@ func sameSessionIdentity(actual map[string]string, expected request) bool {
 }
 
 func approvedSessionIdentity(name, remote, seat, sessionType string) bool {
-	tinyDesk := remote == "yes" && name == "labuser" && sessionType == "x11"
+	tinyDesk := isTinyDeskSession(name, remote, seat, sessionType)
 	localSeat := remote == "no" && seat != "" && name != "root" && name != "labstationd" && name != "labstation-ops" && name != "labstation-fmu"
 	return tinyDesk || localSeat
+}
+
+func isTinyDeskSession(name, remote, seat, sessionType string) bool {
+	if name != "labuser" || sessionType != "x11" {
+		return false
+	}
+	// logind may report XRDP as Remote=no; a seatless labuser X11 session is still Tiny Desk.
+	return remote == "yes" || (remote == "no" && seat == "")
 }
 
 func secretConfigured() bool {

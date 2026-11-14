@@ -468,7 +468,7 @@ func TestReleaseTerminatesOnlyTinyDeskAndNeverRebootsWhileLocalUsersRemain(t *te
 		supervisor: fakeSupervisor{name: "openrc"},
 		local:      []map[string]any{{"id": "seat-1", "user": "teacher"}},
 		remote: []map[string]any{
-			{"id": "rdp-1", "user": "labuser", "type": "x11"},
+			{"id": "rdp-1", "user": "labuser", "remote": false, "seat": "", "type": "x11"},
 			{"id": "ssh-1", "user": "labstation-ops", "type": "tty"},
 		},
 		sessionsOK: true,
@@ -480,6 +480,9 @@ func TestReleaseTerminatesOnlyTinyDeskAndNeverRebootsWhileLocalUsersRemain(t *te
 	}
 	if len(*calls) != 1 || (*calls)[0]["sessionId"] != "rdp-1" || (*calls)[0]["operation"] != "terminate-session" {
 		t.Fatalf("only the labuser X11 session may be terminated: %#v", *calls)
+	}
+	if (*calls)[0]["sessionRemote"] != "no" || (*calls)[0]["sessionSeat"] != "" || (*calls)[0]["forceSession"] != true {
+		t.Fatalf("release did not preserve the seatless XRDP identity reported by logind: %#v", *calls)
 	}
 	if (*calls)[0]["closeTimeoutSeconds"] != float64(10) {
 		t.Fatalf("release did not pass the shared 10 second close deadline: %#v", *calls)

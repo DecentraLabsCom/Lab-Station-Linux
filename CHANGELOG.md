@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.3] - 2026-11-14
+
+### Fixed
+- Release Tiny Desk sessions when logind reports a seatless `labuser` X11
+  session as `Remote=no`, while preserving the local-seat termination guard.
+
 ## [0.4.2] - 2026-11-14
 
 ### Added

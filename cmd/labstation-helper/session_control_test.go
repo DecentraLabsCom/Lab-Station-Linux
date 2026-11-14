@@ -140,6 +140,80 @@ exit 4
 	}
 }
 
+func TestForcedTinyDeskSessionAcceptsLogindRemoteNoWithoutSeat(t *testing.T) {
+	root := t.TempDir()
+	procRoot := filepath.Join(root, "proc")
+	if err := os.Mkdir(procRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	forced := filepath.Join(root, "session-forced")
+	loginctl := filepath.Join(root, "loginctl")
+	script := `#!/bin/sh
+if [ "$1" = "show-session" ]; then
+  printf 'Name=labuser\nRemote=no\nSeat=\nType=x11\nScope=session-rdp-7.scope\n'
+  exit 0
+fi
+if [ "$1" = "terminate-session" ]; then touch "$TEST_SESSION_FORCED"; exit 0; fi
+exit 4
+`
+	writeExecutable(t, loginctl, script)
+	oldLoginctl, oldProcRoot, oldLookup := loginctlBinary, procfsRoot, lookupLabuserUID
+	loginctlBinary = loginctl
+	procfsRoot = procRoot
+	lookupLabuserUID = func() (uint32, error) { return 1002, nil }
+	t.Cleanup(func() { loginctlBinary, procfsRoot, lookupLabuserUID = oldLoginctl, oldProcRoot, oldLookup })
+	t.Setenv("TEST_SESSION_FORCED", forced)
+
+	err := execute(request{
+		Operation: "terminate-session", SessionID: "rdp-7", SessionUser: "labuser",
+		SessionRemote: "no", SessionSeat: "", SessionType: "x11", ForceSession: true,
+		CloseTimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("seatless Tiny Desk session was rejected when logind reported Remote=no: %v", err)
+	}
+	if _, err := os.Stat(forced); err != nil {
+		t.Fatalf("seatless Tiny Desk session did not reach logind cleanup: %v", err)
+	}
+}
+
+func TestForcedTinyDeskSessionRejectsLocalSeatEvenWhenOwnedByLabuser(t *testing.T) {
+	root := t.TempDir()
+	procRoot := filepath.Join(root, "proc")
+	if err := os.Mkdir(procRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	forced := filepath.Join(root, "session-forced")
+	loginctl := filepath.Join(root, "loginctl")
+	script := `#!/bin/sh
+if [ "$1" = "show-session" ]; then
+  printf 'Name=labuser\nRemote=no\nSeat=seat0\nType=x11\nScope=session-seat0.scope\n'
+  exit 0
+fi
+if [ "$1" = "terminate-session" ]; then touch "$TEST_SESSION_FORCED"; exit 0; fi
+exit 4
+`
+	writeExecutable(t, loginctl, script)
+	oldLoginctl, oldProcRoot, oldLookup := loginctlBinary, procfsRoot, lookupLabuserUID
+	loginctlBinary = loginctl
+	procfsRoot = procRoot
+	lookupLabuserUID = func() (uint32, error) { return 1002, nil }
+	t.Cleanup(func() { loginctlBinary, procfsRoot, lookupLabuserUID = oldLoginctl, oldProcRoot, oldLookup })
+	t.Setenv("TEST_SESSION_FORCED", forced)
+
+	err := execute(request{
+		Operation: "terminate-session", SessionID: "rdp-seat0", SessionUser: "labuser",
+		SessionRemote: "no", SessionSeat: "seat0", SessionType: "x11", ForceSession: true,
+		CloseTimeoutSeconds: 1,
+	})
+	if err == nil {
+		t.Fatal("forced termination accepted labuser's local seat session")
+	}
+	if _, err := os.Stat(forced); err == nil {
+		t.Fatal("local seat session reached logind termination")
+	}
+}
+
 func writeSessionProcess(t *testing.T, procRoot string, pid int, uid uint32, scope, executable string, arguments ...string) {
 	t.Helper()
 	directory := filepath.Join(procRoot, strconv.Itoa(pid))

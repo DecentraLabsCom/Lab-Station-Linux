@@ -152,11 +152,13 @@ Tiny Desk outside a reservation or demo. This operator path does not require an
 active lease. End-user access still follows Gateway's authorized reservation or
 demo flow; leases govern reservation-bound `prepare-session` and
 `release-session`. The Lab Manager operator Release action is available only
-when no lease is active and closes remote Tiny Desk sessions before cleaning
-up station state. Both paths use `labuser`, so disconnect provider maintenance
-sessions before a reservation begins. Keep the direct Guacamole connection and
-RDP network path restricted to trusted operators; the station does not enforce
-a lease at application launch.
+when no lease is active and closes managed Tiny Desk X11 sessions before
+cleaning up station state. logind may report the seatless `labuser` XRDP session
+as `Remote=no`; Lab Station still recognizes it as Tiny Desk. Seat-bound
+sessions remain under the local-session safety policy. Both paths use `labuser`,
+so disconnect provider maintenance sessions before a reservation begins. Keep
+the direct Guacamole connection and RDP network path restricted to trusted
+operators; the station does not enforce a lease at application launch.
 
 Reservation preparation clears Tiny Desk work files and FMU temporary state
 through bounded helper processes running as the account that owns each data

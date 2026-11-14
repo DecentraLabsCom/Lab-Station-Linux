@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1] - 2026-11-14
+
+### Fixed
+- Read heartbeat and status artifacts from the live agent state so SSH
+  dispatchers report readiness correctly when the daemon runs with systemd
+  privilege hardening.
+
+### Changed
+- Allow portable installation to skip the optional bundled FMU Executor with
+  `--no-fmu-executor`.
+
 ## [0.4.0] - 2026-11-13
 
 ### Fixed

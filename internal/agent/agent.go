@@ -358,7 +358,9 @@ func (a *Agent) Artifact(name string) ([]byte, error) {
 	var path string
 	switch name {
 	case "heartbeat", "status":
-		path = filepath.Join(a.Config.StateDir, "heartbeat.json")
+		// Dispatchers must report current readiness; the daemon snapshot may be
+		// computed under a stricter systemd privilege context.
+		return json.Marshal(a.Status())
 	case "session-events":
 		path = filepath.Join(a.Config.StateDir, "session-guard-events.jsonl")
 	default:
@@ -367,9 +369,6 @@ func (a *Agent) Artifact(name string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
 		return data, nil
-	}
-	if name == "heartbeat" || name == "status" {
-		return json.Marshal(a.Status())
 	}
 	return nil, err
 }

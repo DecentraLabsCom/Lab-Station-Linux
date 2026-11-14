@@ -8,12 +8,14 @@ PROFILE=dedicated
 PUBLIC_KEY=
 WAKE_INTERFACE=
 NO_INSTALL_DEPS=0
+INSTALL_FMU_EXECUTOR=1
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --profile) PROFILE=${2:?profile required}; shift 2 ;;
         --management-public-key) PUBLIC_KEY=${2:?public key required}; shift 2 ;;
         --wake-interface) WAKE_INTERFACE=${2:?network interface required}; shift 2 ;;
         --no-install-deps) NO_INSTALL_DEPS=1; shift ;;
+        --no-fmu-executor) INSTALL_FMU_EXECUTOR=0; shift ;;
         *) echo "Unknown install option: $1" >&2; exit 2 ;;
     esac
 done
@@ -58,7 +60,7 @@ chmod 0755 /usr/lib/decentralabs/lab-station/labstation-dispatcher-bin /usr/lib/
 FMU_SOURCE=/usr/share/decentralabs/lab-station/fmu-executor-source
 set -- --profile "$PROFILE" --management-public-key "$PUBLIC_KEY"
 if [ -n "$WAKE_INTERFACE" ]; then set -- "$@" --wake-interface "$WAKE_INTERFACE"; fi
-if [ -f "$FMU_SOURCE/requirements.txt" ] && [ -f "$FMU_SOURCE/VERSION" ]; then
+if [ "$INSTALL_FMU_EXECUTOR" = 1 ] && [ -f "$FMU_SOURCE/requirements.txt" ] && [ -f "$FMU_SOURCE/VERSION" ]; then
     set -- "$@" --fmu-executor-source "$FMU_SOURCE"
 fi
 if [ "$NO_INSTALL_DEPS" = 1 ]; then set -- "$@" --no-install-deps; fi

@@ -33,8 +33,10 @@ sudo ./install.sh \
   --management-public-key 'ssh-ed25519 AAAA...'
 ```
 
-Replace `dedicated` with the approved profile. On hosts managed by a
-configuration tool, install OS dependencies there and add `--no-install-deps`.
+Replace `dedicated` with the approved profile. Add `--no-fmu-executor` when the
+station should not install the optional bundled FMU Executor. On hosts managed
+by a configuration tool, install OS dependencies there and add
+`--no-install-deps`.
 For an approved Wake-on-LAN interface, add `--wake-interface <interface>` only
 after checking that the NIC and firmware support the required mode.
 

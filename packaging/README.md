@@ -10,6 +10,8 @@ a release.
 `fpm`, keeping binaries and defaults identical between archive and packages.
 The package manager installs dependencies; `labstationctl setup` applies the
 selected station profile after an operator supplies the Gateway public key.
+For a station that should not install the optional bundled FMU Executor, pass
+`--no-fmu-executor` to `install.sh`.
 
 Set `FMU_EXECUTOR_SOURCE` to a clean Git checkout of the separately versioned
 shared FMU Executor to include its source tree in the payload. The checkout must

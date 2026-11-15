@@ -11,7 +11,7 @@ certification.
    architecture, supervisor, NIC, and current xrdp/SSH configuration.
 2. Choose `dedicated`, `hybrid`, or `fmu-only`. The last profile does not install
    Tiny Desk GUI components. Use `hybrid` only when the host has a local
-   instructor session that must be protected.
+   local user session that must be protected.
 3. In Lab Manager, create or select the Linux Station. Set its SSH address and
    port, profile, and configured station application where applicable. Gateway
    generates and stores its private SSH key encrypted; copy the displayed
@@ -155,7 +155,7 @@ while a reservation or demo lease is active. Reservation-bound lifecycle
 commands must carry their matching lease context. The Lab Manager operator
 Release action follows the same no-active-lease rule, closes managed Tiny Desk
 X11 sessions, then restarts an installed FMU Executor to terminate all its
-sessions and clear temporary state. It preserves the instructor's console login,
+sessions and clear temporary state. It preserves the local console session,
 but this service-wide FMU cleanup can interrupt work from that session. FMU
 cleanup failure makes Release fail. logind may report the seatless
 `labuser` XRDP session as `Remote=no`; Lab Station still recognizes it as Tiny
@@ -315,7 +315,7 @@ used to infer when local use began.
 
 Enable local mode only on a `hybrid` station, with a successful session
 inventory and no active reservation or remote lab-user session; it marks
-exclusive instructor use and expires after eight hours by default. `clear`
+exclusive on-site use and expires after eight hours by default. `clear`
 remains available on any profile to remove a stale flag. `Prepare` and `Release` are supported only for
 `dedicated` and `hybrid` physical stations. Prepare rejects local mode and an
 unexpected local console session on a dedicated station. On hybrid, the default
@@ -328,14 +328,14 @@ manually. If a prompt is declined, times out, or cannot be displayed while its
 session remains active, Prepare fails before any session is closed or cleanup
 runs. A session that signs out during its prompt is already released. Set
 `station.allow_local_session_eviction = false` to make Prepare fail safely
-without terminating an instructor session; Windows uses the equivalent
+without terminating a local session; Windows uses the equivalent
 `AllowLocalSessionEviction=false` entry in `labstation/data/station-profile.ini`.
 `--no-guard` is an explicit administrative bypass that skips confirmation and
 the grace period but still evicts immediately when policy allows. `--guard-notify=false`
 does not bypass the acknowledgement requirement. Release closes only the
-managed remote `labuser` session, preserves the instructor's console login,
+managed remote `labuser` session, preserves the local console session,
 then restarts an installed FMU Executor and clears temporary data. This
-service-wide cleanup can interrupt an instructor's FMU work. Release is
+service-wide cleanup can interrupt FMU work from that session. Release is
 rejected while a reservation or demo lease is active. Manual/no-lease Prepare
 also refuses with `STATION_REMOTE_SESSION_ACTIVE` while a remote
 `labuser` Tiny Desk session is present. The response explains that it would
@@ -357,7 +357,7 @@ already released. Any remaining grace interval after confirmation allows
 voluntary sign-out.
 Incomplete workspace or FMU cleanup is a failed Prepare (exit code 2) and
 leaves the lease `recovery-required` until an operator reconciles the station.
-An instructor who signs out during the grace interval is treated as already
+A local user who signs out during the grace interval is treated as already
 released; new or changed sessions cause Prepare to refuse before terminating
 any session.
 

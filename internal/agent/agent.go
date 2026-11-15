@@ -531,7 +531,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	if localSessionDecision == "refuse" {
 		message := "unexpected local session on dedicated station"
 		if a.Config.Profile == "hybrid" {
-			message = "instructor session is active; local-session eviction is disabled"
+			message = "local user session is active; local-session eviction is disabled"
 		}
 		return 2, "", message, map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": local, "retryable": true}
 	}
@@ -590,7 +590,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": !releaseStarted}
 				}
 				if err := a.helper(ctx, helperSessionRequest(session, false, 0)); err != nil {
-					return 2, "", "unable to release instructor session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
+					return 2, "", "unable to release local user session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
 				releaseStarted = true
 			}
@@ -648,7 +648,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 }
 
 func localSessionAcknowledgementFailure(acknowledged int, reason string) (int, string, string, map[string]any) {
-	message := "local session was not acknowledged; no session was closed. " + reason + ". Retry Prepare after the instructor can respond or signs out."
+	message := "local session was not acknowledged; no session was closed. " + reason + ". Retry Prepare after the local user can respond or signs out."
 	if reason == "session notification is disabled" {
 		message = "local-session acknowledgement is required, but the confirmation prompt is disabled; no session was closed. Enable the prompt or use the explicit --no-guard administrative bypass."
 	}

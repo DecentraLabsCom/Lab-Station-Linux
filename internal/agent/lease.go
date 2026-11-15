@@ -27,8 +27,11 @@ type LeaseContext struct {
 	ExpiresAt      string `json:"expiresAt"`
 }
 
+type manualPrepareContextKey struct{}
+
 type leaseRecord struct {
 	LeaseID        string `json:"leaseId"`
+	LabID          string `json:"labId,omitempty"`
 	ReservationKey string `json:"reservationKey,omitempty"`
 	Kind           string `json:"kind"`
 	Generation     uint64 `json:"generation"`
@@ -191,7 +194,7 @@ func (a *Agent) executeLeaseRequest(parent context.Context, request Request) Res
 		}
 		state.NextGeneration++
 		generation = state.NextGeneration
-		state.Active = &leaseRecord{LeaseID: lease.LeaseID, ReservationKey: lease.ReservationKey, Kind: lease.Kind, Generation: generation, State: "preparing", NotBefore: lease.NotBefore, ExpiresAt: lease.ExpiresAt, UpdatedAt: now.Format(time.RFC3339Nano)}
+		state.Active = &leaseRecord{LeaseID: lease.LeaseID, LabID: lease.LabID, ReservationKey: lease.ReservationKey, Kind: lease.Kind, Generation: generation, State: "preparing", NotBefore: lease.NotBefore, ExpiresAt: lease.ExpiresAt, UpdatedAt: now.Format(time.RFC3339Nano)}
 	} else {
 		generation = lease.Generation
 		if state.Active == nil && state.LastReleased != nil && state.LastReleased.LeaseID == lease.LeaseID && state.LastReleased.Generation == generation {
@@ -240,6 +243,9 @@ func (a *Agent) executeLeaseRequest(parent context.Context, request Request) Res
 				state.Active.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			}
 		}
+		if request.Command == "release-session" {
+			result.Metadata["retryable"] = true
+		}
 		operation := state.Operations[request.ID]
 		operation.State = "completed"
 		operation.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -253,7 +259,6 @@ func (a *Agent) executeLeaseRequest(parent context.Context, request Request) Res
 	ctx, cancel := context.WithDeadline(parent, deadline)
 	result := a.Execute(ctx, request.ID, request.Command, request.Args)
 	cancel()
-	result.Metadata["lease"] = map[string]any{"leaseId": lease.LeaseID, "generation": generation, "state": "active", "expiresAt": lease.ExpiresAt}
 	lock, err = lockLeaseJournal(a.Config.StateDir)
 	if err != nil {
 		return leaseErrorResult(request, "STATION_JOURNAL_UNAVAILABLE", "operation result could not be recorded")
@@ -262,6 +267,16 @@ func (a *Agent) executeLeaseRequest(parent context.Context, request Request) Res
 	state, err = loadLeaseState(a.Config.StateDir)
 	if err != nil {
 		return leaseErrorResult(request, "STATION_JOURNAL_UNAVAILABLE", "operation result could not be recorded")
+	}
+	if request.Command == "prepare-session" && result.ExitCode >= 2 && result.Metadata["retryable"] == true {
+		if state.Active != nil && state.Active.LeaseID == lease.LeaseID && state.Active.Generation == generation {
+			state.Active = nil
+		}
+		delete(state.Operations, request.ID)
+		if err := saveLeaseState(a.Config.StateDir, state); err != nil {
+			return leaseErrorResult(request, "STATION_JOURNAL_UNAVAILABLE", "refused prepare could not be rolled back")
+		}
+		return result
 	}
 	operation := state.Operations[request.ID]
 	operation.State = "completed"
@@ -326,15 +341,16 @@ func (a *Agent) executeOperatorPrepare(ctx context.Context, request Request) Res
 	if state.Active != nil {
 		return leaseErrorResult(request, "STATION_LEASE_CONFLICT", "an active lease must be prepared through its reservation flow")
 	}
-	return a.Execute(ctx, request.ID, "prepare-session", request.Args)
+	manualCtx := context.WithValue(ctx, manualPrepareContextKey{}, true)
+	return a.Execute(manualCtx, request.ID, "prepare-session", request.Args)
 }
 
 // executeOperatorRelease serializes the no-lease cleanup exposed through the
 // trusted station-management channel against reservation lease operations.
 // Lease-bound release continues to use dispatcher protocol 2.
 func (a *Agent) executeOperatorRelease(ctx context.Context, request Request) Result {
-	if len(request.Args) > 1 || (len(request.Args) == 1 && request.Args[0] != "--require-rdp-disconnected") {
-		return leaseErrorResult(request, "STATION_COMMAND_REJECTED", "operator release does not accept arguments")
+	if err := ValidateCommand("release-session", request.Args); err != nil {
+		return leaseErrorResult(request, "STATION_COMMAND_REJECTED", err.Error())
 	}
 	operationLock, err := lockLeaseOperation(a.Config.StateDir, request.ID, true)
 	if errors.Is(err, errLeaseOperationInProgress) {
@@ -561,48 +577,160 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 		return nil
 	}
 	for _, operation := range state.Operations {
-		if operation.LeaseID == state.Active.LeaseID && operation.Generation == state.Active.Generation && operation.State == "processing" {
+		if operation.LeaseID != state.Active.LeaseID || operation.Generation != state.Active.Generation {
+			continue
+		}
+		if operation.State == "processing" || operationNeedsReconciliation(operation) {
 			unlockState(lock)
 			return nil
 		}
 	}
 	active := *state.Active
-	state.Active.State = "expiring"
-	state.Active.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := saveLeaseState(a.Config.StateDir, state); err != nil {
+	if active.State == "expiring" || active.State == "releasing" {
+		markLeaseExpiryReconciliationRequired(&state, active, "expired lease has an interrupted release without a durable result")
+		if err := saveLeaseState(a.Config.StateDir, state); err != nil {
+			unlockState(lock)
+			return err
+		}
 		unlockState(lock)
-		return err
+		a.log("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "lease journal records an interrupted release without a recoverable result"})
+		return nil
+	}
+	if active.State == "recovery-required" {
+		expiryAttemptID := fmt.Sprintf("lease-expiry-%d", active.Generation)
+		if _, hasExpiryAttempt := state.Operations[expiryAttemptID]; !hasExpiryAttempt && !leaseHasOnlyRetryableReleaseFailures(state, active) {
+			markLeaseExpiryReconciliationRequired(&state, active, "expired lease has no persisted retryable Release result")
+			if err := saveLeaseState(a.Config.StateDir, state); err != nil {
+				unlockState(lock)
+				return err
+			}
+			unlockState(lock)
+			a.log("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "expired lease has no persisted retryable Release result"})
+			return nil
+		}
+	}
+	operationID, retryAllowed := nextLeaseExpiryOperationID(state, active)
+	if !retryAllowed {
+		unlockState(lock)
+		return nil
+	}
+	if active.Kind == "reservation" && !leaseIdentifierPattern.MatchString(active.LabID) {
+		markLeaseExpiryReconciliationRequired(&state, active, "reservation lab identity is missing from the persisted lease")
+		if err := saveLeaseState(a.Config.StateDir, state); err != nil {
+			unlockState(lock)
+			return err
+		}
+		unlockState(lock)
+		a.log("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "reservation lab identity is missing from the persisted lease"})
+		return nil
 	}
 	unlockState(lock)
 
-	result := a.Execute(ctx, fmt.Sprintf("lease-expiry-%d", active.Generation), "release-session", nil)
-	lock, err = lockLeaseJournal(a.Config.StateDir)
-	if err != nil {
-		return err
+	issuedAt := time.Now().UTC()
+	request := Request{
+		SchemaVersion: 2,
+		ID:            operationID,
+		Operation:     "execute",
+		Command:       "release-session",
+		Args:          []string{},
+		IssuedAt:      issuedAt.Format(time.RFC3339Nano),
+		ExecuteBefore: issuedAt.Add(5 * time.Minute).Format(time.RFC3339Nano),
+		Context: &LeaseContext{
+			Kind: active.Kind, LabID: active.LabID, ReservationKey: active.ReservationKey,
+			LeaseID: active.LeaseID, Generation: active.Generation, NotBefore: active.NotBefore, ExpiresAt: active.ExpiresAt,
+		},
 	}
-	defer unlockState(lock)
-	state, err = loadLeaseState(a.Config.StateDir)
-	if err != nil {
-		return err
-	}
-	if state.Active == nil || state.Active.LeaseID != active.LeaseID || state.Active.Generation != active.Generation {
-		return nil
-	}
-	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	result := a.executeLeaseRequest(ctx, request)
 	if result.ExitCode < 2 {
-		active.State = "expired"
-		active.UpdatedAt = updatedAt
-		state.LastReleased = &active
-		state.Active = nil
-	} else {
-		state.Active.State = "recovery-required"
-		state.Active.UpdatedAt = updatedAt
+		lock, err = lockLeaseJournal(a.Config.StateDir)
+		if err != nil {
+			return err
+		}
+		state, err = loadLeaseState(a.Config.StateDir)
+		if err != nil {
+			unlockState(lock)
+			return err
+		}
+		if state.Active == nil && state.LastReleased != nil && state.LastReleased.LeaseID == active.LeaseID && state.LastReleased.Generation == active.Generation {
+			state.LastReleased.State = "expired"
+			state.LastReleased.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			if err := saveLeaseState(a.Config.StateDir, state); err != nil {
+				unlockState(lock)
+				return err
+			}
+		}
+		unlockState(lock)
 	}
-	if err := saveLeaseState(a.Config.StateDir, state); err != nil {
-		return err
+	eventKind := "lease-expiry-attempt"
+	if result.ExitCode < 2 {
+		eventKind = "lease-expired"
 	}
-	a.appendEvent(map[string]any{"kind": "lease-expired", "timestamp": updatedAt, "leaseId": active.LeaseID, "generation": active.Generation, "cleanupExitCode": result.ExitCode})
+	event := map[string]any{"kind": eventKind, "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "leaseId": active.LeaseID, "generation": active.Generation, "operationId": operationID, "cleanupExitCode": result.ExitCode, "retryable": result.Metadata["retryable"] == true}
+	a.appendEvent(event)
 	return nil
+}
+
+func nextLeaseExpiryOperationID(state leaseState, active leaseRecord) (string, bool) {
+	for attempt := 1; ; attempt++ {
+		operationID := fmt.Sprintf("lease-expiry-%d", active.Generation)
+		if attempt > 1 {
+			operationID = fmt.Sprintf("lease-expiry-%d-retry-%d", active.Generation, attempt)
+		}
+		if !ValidOperationID(operationID) {
+			return "", false
+		}
+		operation, found := state.Operations[operationID]
+		if !found {
+			return operationID, true
+		}
+		if operation.LeaseID != active.LeaseID || operation.Generation != active.Generation || operation.Command != "release-session" || operation.State != "completed" || operation.Result == nil || operation.Result.ExitCode < 2 || operation.Result.Metadata["retryable"] != true {
+			return "", false
+		}
+	}
+}
+
+func leaseHasOnlyRetryableReleaseFailures(state leaseState, active leaseRecord) bool {
+	found := false
+	for _, operation := range state.Operations {
+		if operation.LeaseID != active.LeaseID || operation.Generation != active.Generation || operation.Command != "release-session" {
+			continue
+		}
+		if operation.State != "completed" || operation.Result == nil || operation.Result.ExitCode < 2 || operation.Result.Metadata["retryable"] != true {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+func markLeaseExpiryReconciliationRequired(state *leaseState, active leaseRecord, reason string) {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	active.State = "recovery-required"
+	active.UpdatedAt = updatedAt
+	state.Active = &active
+	if state.Operations == nil {
+		state.Operations = map[string]leaseOperation{}
+	}
+	operationID := fmt.Sprintf("lease-expiry-recovery-%d", active.Generation)
+	if _, exists := state.Operations[operationID]; exists {
+		return
+	}
+	request := Request{ID: operationID, Command: "release-session"}
+	result := leaseErrorResult(request, "STATION_OPERATION_RECOVERY_REQUIRED", reason)
+	state.Operations[operationID] = leaseOperation{
+		State: "recovery-required", Command: "release-session", LeaseID: active.LeaseID,
+		Generation: active.Generation, UpdatedAt: updatedAt, Result: &result,
+	}
+}
+
+func operationNeedsReconciliation(operation leaseOperation) bool {
+	if operation.State != "recovery-required" {
+		return false
+	}
+	if operation.Result == nil {
+		return true
+	}
+	return operation.Result.Metadata["code"] == "STATION_OPERATION_RECOVERY_REQUIRED"
 }
 
 const unreservedTinyDeskDisconnectGrace = 10 * time.Second

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-15
+
+### Changed
+- Require affirmative confirmation in a per-session Linux desktop dialog
+  before hybrid Prepare evicts a local session; install `zenity` for physical
+  profiles and fail before cleanup when acknowledgement is unavailable while
+  the session remains active.
+- Release restarts an installed FMU Executor to terminate its sessions and
+  clear temporary data, matching Windows; cleanup failure leaves the release
+  incomplete and prevents a requested reboot.
+- Persist lease-expiry Release attempts and retry only known pre-effect failures;
+  partial cleanup failures and interrupted operations require reconciliation,
+  matching Windows.
+
 ## [0.4.6] - 2026-11-14
 
 ### Fixed

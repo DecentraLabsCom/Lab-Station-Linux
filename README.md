@@ -31,7 +31,7 @@ readiness checks.
 | Profile | Intended use |
 |---|---|
 | `dedicated` | Linux host dedicated to remote laboratory use. |
-| `hybrid` | Host shared with a local instructor; local mode protects declared on-site use, and remote preparation follows the configured local-session eviction policy. |
+| `hybrid` | Host shared with a local instructor; local mode protects declared on-site use, and remote preparation requires each eligible local desktop session to confirm before eviction. |
 | `fmu-only` | Headless FMU endpoint; does not install Tiny Desk graphical components. |
 
 Windows uses `server` and `hybrid`; Linux defines `dedicated`, `hybrid`, and

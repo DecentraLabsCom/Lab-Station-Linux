@@ -29,7 +29,7 @@
     "profile": { "enum": ["dedicated", "hybrid", "fmu-only"] },
     "management": { "type": "object", "required": ["transport", "ready"], "properties": { "transport": { "enum": ["ssh", "winrm"] }, "ready": { "type": "boolean" } }, "additionalProperties": true },
     "remoteAccess": { "type": "object", "required": ["mode", "ready"], "properties": { "mode": { "type": "string" }, "ready": { "type": "boolean" } }, "additionalProperties": true },
-    "summary": { "type": "object", "required": ["state", "ready", "issues"], "properties": { "state": { "enum": ["ready", "degraded", "unavailable", "unknown"] }, "ready": { "type": "boolean" }, "issues": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": true },
+    "summary": { "type": "object", "description": "Readiness verdict for the profile's primary capability: readiness.physicalLab for dedicated or hybrid profiles, and readiness.fmu for fmu-only. Other capabilities remain independent.", "required": ["state", "ready", "issues"], "properties": { "state": { "enum": ["ready", "degraded", "unavailable", "unknown"] }, "ready": { "type": "boolean" }, "issues": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": true },
     "readiness": {
       "type": "object",
       "required": ["physicalLab", "wake", "fmu"],
@@ -40,7 +40,7 @@
       },
       "additionalProperties": true
     },
-    "sessions": { "type": "object", "required": ["active", "localSessionActive"], "properties": { "active": { "type": "array", "items": { "$ref": "#/$defs/session" } }, "localSessionActive": { "type": "boolean" } }, "additionalProperties": true },
+    "sessions": { "type": "object", "required": ["active", "localSessionActive"], "properties": { "active": { "type": "array", "items": { "$ref": "#/$defs/session" } }, "localSessionActive": { "type": "boolean", "description": "True when any interactive physical-console or seat session exists, regardless of account; excludes remote RDP/Tiny Desk sessions." } }, "additionalProperties": true },
     "operations": { "type": "object", "additionalProperties": true },
     "localModeEnabled": { "type": "boolean" },
     "status": { "type": "object", "additionalProperties": true }

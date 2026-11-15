@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,75 @@ func TestDispatchV2RejectsExpiredOrMissingLeaseContextBeforeEffects(t *testing.T
 	result = dispatchTestRequest(t, a, missing)
 	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_LEASE_CONTEXT_REQUIRED" || len(*calls) != 0 {
 		t.Fatalf("unscoped v2 prepare was not rejected: %#v calls=%#v", result, *calls)
+	}
+}
+
+func TestOperatorSessionCommandsRefuseActiveLease(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	a.Config = cfg
+	now := time.Now().UTC()
+	active := &leaseRecord{
+		LeaseID: "operator-conflict", Kind: "reservation", Generation: 3, State: "active",
+		NotBefore: now.Add(-time.Minute).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339Nano),
+		UpdatedAt: now.Format(time.RFC3339Nano),
+	}
+	if err := saveLeaseState(cfg.StateDir, leaseState{NextGeneration: 3, Active: active, Operations: map[string]leaseOperation{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, command := range []string{"prepare-session", "release-session"} {
+		t.Run(command, func(t *testing.T) {
+			result := a.ExecuteOperator(context.Background(), "operator-"+strings.TrimSuffix(command, "-session"), command, nil)
+			if result.ExitCode != 2 || result.Metadata["code"] != "STATION_LEASE_CONFLICT" {
+				t.Fatalf("operator %s bypassed the active lease: %#v", command, result)
+			}
+		})
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("operator refusal made session changes: %#v", *calls)
+	}
+	state, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active == nil || state.Active.LeaseID != active.LeaseID || state.Active.State != "active" {
+		t.Fatalf("operator refusal changed reservation lease state: %#v", state.Active)
+	}
+}
+
+func TestDispatchV1LifecycleCommandsUseOperatorLeaseGuard(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	a.Config = cfg
+	now := time.Now().UTC()
+	active := &leaseRecord{
+		LeaseID: "dispatcher-conflict", Kind: "reservation", Generation: 4, State: "active",
+		NotBefore: now.Add(-time.Minute).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339Nano),
+		UpdatedAt: now.Format(time.RFC3339Nano),
+	}
+	if err := saveLeaseState(cfg.StateDir, leaseState{NextGeneration: 4, Active: active, Operations: map[string]leaseOperation{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, command := range []string{"prepare-session", "release-session"} {
+		t.Run(command, func(t *testing.T) {
+			raw := fmt.Sprintf(`{"schemaVersion":1,"id":"operator-%s","operation":"execute","command":%q,"args":[]}`,
+				strings.TrimSuffix(command, "-session"), command)
+			result := dispatchTestRequest(t, a, raw)
+			if result.ExitCode != 2 || result.Metadata["code"] != "STATION_LEASE_CONFLICT" {
+				t.Fatalf("dispatcher v1 %s bypassed the active lease: %#v", command, result)
+			}
+		})
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("dispatcher refusal made session changes: %#v", *calls)
 	}
 }
 
@@ -132,6 +203,137 @@ func TestCancelledPrepareCannotActivateReservationLease(t *testing.T) {
 	}
 }
 
+func TestKnownPrepareRefusalDoesNotPoisonLeaseOrOperationID(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, _ := newTestAgent(t, "dedicated", runtime)
+	a.Config = cfg
+	localModePath := filepath.Join(cfg.StateDir, "local-mode.flag")
+	if err := os.WriteFile(localModePath, []byte("enabled"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	raw := v2LeaseRequest("retry-same-operation", "prepare-session", "lease-retry", 0, now, now.Add(time.Minute), now.Add(time.Hour))
+
+	refused := dispatchTestRequest(t, a, raw)
+	state, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refused.ExitCode != 2 || refused.Metadata["code"] != "STATION_LOCAL_MODE_ACTIVE" || refused.Metadata["retryable"] != true {
+		t.Fatalf("active local mode should be an explicit retryable refusal: %#v", refused)
+	}
+	if state.Active != nil {
+		t.Fatalf("a refusal before station changes must not retain a lease: %#v", state.Active)
+	}
+	if _, found := state.Operations["retry-same-operation"]; found {
+		t.Fatal("a refusal before station changes must not cache the operation id")
+	}
+	if err := os.Remove(localModePath); err != nil {
+		t.Fatal(err)
+	}
+
+	retried := dispatchTestRequest(t, a, raw)
+	if retried.ExitCode != 0 || retried.Metadata["lease"].(map[string]any)["state"] != "active" {
+		t.Fatalf("the same operation id should prepare after the refusal condition is cleared: %#v", retried)
+	}
+	if retried.Metadata["lease"].(map[string]any)["generation"] != float64(2) {
+		t.Fatalf("retry should keep the station's durable generation monotonic: %#v", retried.Metadata["lease"])
+	}
+}
+
+func TestIncompletePrepareCleanupLeavesLeaseForRecovery(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, _ := newTestAgent(t, "hybrid", runtime)
+	a.Config = cfg
+	a.cleanWorkData = func() error { return fmt.Errorf("permission denied") }
+	now := time.Now().UTC()
+
+	result := dispatchTestRequest(t, a, v2LeaseRequest("cleanup-failure", "prepare-session", "lease-cleanup", 0, now, now.Add(time.Minute), now.Add(time.Hour)))
+	state, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_PREPARE_CLEANUP_FAILED" {
+		t.Fatalf("incomplete cleanup must be a failed prepare: %#v", result)
+	}
+	lease := result.Metadata["lease"].(map[string]any)
+	if lease["state"] != "recovery-required" || state.Active == nil || state.Active.State != "recovery-required" {
+		t.Fatalf("incomplete cleanup must retain an explicit recovery lease: result=%#v active=%#v", lease, state.Active)
+	}
+}
+
+func TestIncompleteFMUReleaseCleanupLeavesLeaseForRecovery(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, _ := newTestAgent(t, "hybrid", runtime)
+	a.Config = cfg
+	preparedAt := time.Now().UTC()
+	expires := preparedAt.Add(time.Hour)
+	prepared := dispatchTestRequest(t, a, v2LeaseRequest("prepare-before-fmu-release-failure", "prepare-session", "lease-fmu-release", 0, preparedAt, preparedAt.Add(time.Minute), expires))
+	if prepared.ExitCode != 0 {
+		t.Fatalf("setup prepare failed: %#v", prepared)
+	}
+	a.cleanFMUExecutorStateOverride = func(context.Context) error { return fmt.Errorf("permission denied") }
+
+	result := dispatchTestRequest(t, a, v2LeaseRequest("fmu-release-cleanup-failure", "release-session", "lease-fmu-release", 1, preparedAt, preparedAt.Add(time.Minute), expires))
+	state, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_FMU_CLEANUP_FAILED" {
+		t.Fatalf("incomplete FMU cleanup must fail reservation release: %#v", result)
+	}
+	if state.Active == nil || state.Active.State != "recovery-required" {
+		t.Fatalf("incomplete FMU cleanup must retain the lease for recovery: %#v", state.Active)
+	}
+}
+
+func TestOptionalRebootFailureWarnsAfterReleaseAndClearsLease(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.StateDir = t.TempDir()
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+	a.Config = cfg
+	prepareTime := time.Now().UTC()
+	expires := prepareTime.Add(time.Hour)
+	prepared := dispatchTestRequest(t, a, v2LeaseRequest("prepare-before-reboot-warning", "prepare-session", "lease-reboot-warning", 0, prepareTime, prepareTime.Add(time.Minute), expires))
+	if prepared.ExitCode != 0 {
+		t.Fatalf("setup prepare failed: %#v", prepared)
+	}
+	a.runHelper = func(_ context.Context, raw []byte) error {
+		var request map[string]any
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return err
+		}
+		*calls = append(*calls, request)
+		if request["operation"] == "power-reboot" {
+			return fmt.Errorf("reboot helper unavailable")
+		}
+		return nil
+	}
+	releaseRaw := strings.Replace(
+		v2LeaseRequest("release-reboot-warning", "release-session", "lease-reboot-warning", 1, prepareTime, prepareTime.Add(time.Minute), expires),
+		`"args":[]`, `"args":["--reboot"]`, 1,
+	)
+
+	released := dispatchTestRequest(t, a, releaseRaw)
+	state, err := loadLeaseState(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released.ExitCode != 1 || !released.Success || released.Metadata["lease"].(map[string]any)["state"] != "released" || released.Metadata["rebootDeferred"] != true || released.Metadata["rebootReason"] != "reboot request failed" {
+		t.Fatalf("a failed optional reboot must warn after releasing the reservation: %#v", released)
+	}
+	if state.Active != nil {
+		t.Fatalf("successful remote release must clear the lease despite reboot warning: %#v", state.Active)
+	}
+}
+
 func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
 	now := time.Now().UTC()
@@ -167,7 +369,7 @@ func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing
 		t.Fatalf("watchdog changed an unexpired lease: policy=%q state=%#v helper=%#v", matrix.LeaseExpiry.UnexpiredLease, state.Active, *calls)
 	}
 
-	expired := leaseRecord{LeaseID: "lease-expired", Kind: "reservation", Generation: 7, State: "active", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano), ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano)}
+	expired := leaseRecord{LeaseID: "lease-expired", LabID: "lab-42", ReservationKey: "reservation-123", Kind: "reservation", Generation: 7, State: "active", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano), ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano)}
 	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 7, Active: &expired, Operations: map[string]leaseOperation{}}); err != nil {
 		t.Fatal(err)
 	}
@@ -181,11 +383,181 @@ func TestLeaseAdmissionWindowFailsClosedAndWatchdogCleansExpiredLease(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if matrix.LeaseExpiry.ExpiredLease != "release-once" || state.Active != nil || state.LastReleased == nil || state.LastReleased.Generation != 7 || state.LastReleased.State != "expired" {
+	if matrix.LeaseExpiry.ExpiredLease != "release" || state.Active != nil || state.LastReleased == nil || state.LastReleased.Generation != 7 || state.LastReleased.State != "expired" {
 		t.Fatalf("watchdog did not persist cleanup and generation: %#v", state)
 	}
 	if len(*calls) != 1 || (*calls)[0]["operation"] != "terminate-session" || (*calls)[0]["sessionId"] != "opaque-rdp-7" {
 		t.Fatalf("watchdog did not terminate only the active Tiny Desk session: %#v", *calls)
+	}
+}
+
+func TestLeaseExpiryRetriesOnlyKnownPreEffectFailures(t *testing.T) {
+	matrix := loadPortableParityMatrix(t)
+	runtime := &fakeRuntime{sessionsOK: false}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	now := time.Now().UTC()
+	active := leaseRecord{
+		LeaseID: "lease-expiry-retry", LabID: "lab-expiry-retry", ReservationKey: "reservation-expiry-retry", Kind: "reservation",
+		Generation: 8, State: "active", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+	}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 8, Active: &active, Operations: map[string]leaseOperation{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, found := state.Operations["lease-expiry-8"]
+	if matrix.LeaseExpiry.KnownPreEffectFailure != "retry" || !found || first.Result == nil || first.Result.Metadata["retryable"] != true {
+		t.Fatalf("a known failure before session effects must be durably marked retryable: policy=%q operation=%#v", matrix.LeaseExpiry.KnownPreEffectFailure, first)
+	}
+	if state.Active == nil || state.Active.State != "recovery-required" {
+		t.Fatalf("a retryable failure must keep reservation admission closed: %#v", state.Active)
+	}
+
+	runtime.sessionsOK = true
+	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err = loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active != nil || state.LastReleased == nil || state.LastReleased.State != "expired" {
+		t.Fatalf("retryable cleanup did not release the expired lease: %#v", state)
+	}
+	if _, found := state.Operations["lease-expiry-8-retry-2"]; !found || len(*calls) != 0 {
+		t.Fatalf("retry must use a fresh durable operation id and avoid station effects after inventory refusal: operations=%#v helper=%#v", state.Operations, *calls)
+	}
+}
+
+func TestLeaseExpiryDoesNotRetryPartialCleanupFailure(t *testing.T) {
+	matrix := loadPortableParityMatrix(t)
+	runtime := &fakeRuntime{
+		sessionsOK: true,
+		remote:     []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11", "remote": true}},
+	}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	a.runHelper = func(_ context.Context, raw []byte) error {
+		var request map[string]any
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return err
+		}
+		*calls = append(*calls, request)
+		return fmt.Errorf("session termination outcome requires reconciliation")
+	}
+	now := time.Now().UTC()
+	active := leaseRecord{
+		LeaseID: "lease-expiry-partial", LabID: "lab-expiry-partial", ReservationKey: "reservation-expiry-partial", Kind: "reservation",
+		Generation: 9, State: "active", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+	}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 9, Active: &active, Operations: map[string]leaseOperation{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matrix.LeaseExpiry.PartialOrUnknownFailure != "recovery-required" || len(*calls) != 1 || state.Active == nil || state.Active.State != "recovery-required" {
+		t.Fatalf("partial cleanup must block automatic retries and retain the lease for reconciliation: policy=%q active=%#v helper=%#v", matrix.LeaseExpiry.PartialOrUnknownFailure, state.Active, *calls)
+	}
+}
+
+func TestLeaseExpiryDoesNotReplayInterruptedCleanup(t *testing.T) {
+	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11"}}}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	now := time.Now().UTC()
+	active := leaseRecord{
+		LeaseID: "lease-expiry-unknown", LabID: "lab-expiry-unknown", ReservationKey: "reservation-expiry-unknown", Kind: "reservation",
+		Generation: 10, State: "recovery-required", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+	}
+	unknown := Result{ID: "lease-expiry-10", Command: "release-session", ExitCode: 2, Outcome: "failure",
+		Message: "operation outcome is unknown after daemon restart", Metadata: map[string]any{"code": "STATION_OPERATION_RECOVERY_REQUIRED"}}
+	operations := map[string]leaseOperation{
+		"lease-expiry-10": {State: "recovery-required", Command: "release-session", LeaseID: active.LeaseID, Generation: active.Generation, Result: &unknown},
+	}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 10, Active: &active, Operations: operations}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("an interrupted operation with an unknown outcome must not be replayed: %#v", *calls)
+	}
+}
+
+func TestLeaseExpiryRequiresReconciliationForUnclassifiedRecoveryState(t *testing.T) {
+	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11"}}}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	now := time.Now().UTC()
+	active := leaseRecord{
+		LeaseID: "lease-expiry-unclassified", LabID: "lab-unclassified", ReservationKey: "reservation-unclassified", Kind: "reservation",
+		Generation: 11, State: "recovery-required", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+	}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 11, Active: &active, Operations: map[string]leaseOperation{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, found := state.Operations["lease-expiry-recovery-11"]
+	if len(*calls) != 0 || state.Active == nil || state.Active.State != "recovery-required" || !found || marker.State != "recovery-required" {
+		t.Fatalf("a recovery lease without a persisted retryable Release result must remain blocked: active=%#v marker=%#v helper=%#v", state.Active, marker, *calls)
+	}
+}
+
+func TestLeaseExpiryRetriesRecordedPreEffectReleaseFailure(t *testing.T) {
+	runtime := &fakeRuntime{sessionsOK: true}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	now := time.Now().UTC()
+	active := leaseRecord{
+		LeaseID: "lease-expiry-recorded-retry", LabID: "lab-recorded-retry", ReservationKey: "reservation-recorded-retry", Kind: "reservation",
+		Generation: 12, State: "recovery-required", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+	}
+	retryableResult := Result{ID: "gateway-release-12", Command: "release-session", ExitCode: 2, Outcome: "failure",
+		Message: "session inventory unavailable", Metadata: map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}}
+	operations := map[string]leaseOperation{
+		"gateway-release-12": {State: "completed", Command: "release-session", LeaseID: active.LeaseID, Generation: active.Generation, UpdatedAt: now.Format(time.RFC3339Nano), Result: &retryableResult},
+	}
+	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 12, Active: &active, Operations: operations}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadLeaseState(a.Config.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active != nil || state.LastReleased == nil || state.LastReleased.State != "expired" || len(*calls) != 0 {
+		t.Fatalf("a persisted pre-effect Release failure should be retried with no session effect required: state=%#v helper=%#v", state, *calls)
+	}
+	if _, found := state.Operations["lease-expiry-12"]; !found {
+		t.Fatalf("expiry retry did not record its fresh operation id: %#v", state.Operations)
 	}
 }
 

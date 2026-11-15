@@ -70,10 +70,10 @@ func dispatchV1(ctx context.Context, output io.Writer, a *Agent, request Request
 			return writeRequestError(output, request, "STATION_COMMAND_REJECTED", "dispatcher protocol 1 does not accept protocol 2 fields")
 		}
 		if request.Command == "prepare-session" {
-			return writeJSONResult(output, a.executeOperatorPrepare(ctx, request))
+			return writeJSONResult(output, a.ExecuteOperator(ctx, request.ID, request.Command, request.Args))
 		}
 		if request.Command == "release-session" {
-			return writeJSONResult(output, a.executeOperatorRelease(ctx, request))
+			return writeJSONResult(output, a.ExecuteOperator(ctx, request.ID, request.Command, request.Args))
 		}
 		return writeJSONResult(output, a.Execute(ctx, request.ID, request.Command, request.Args))
 	case "artifact.read":

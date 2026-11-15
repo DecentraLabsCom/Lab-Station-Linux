@@ -1,6 +1,6 @@
 {
   "source": "Lab Gateway/docs/station-test-parity.json",
-  "version": 2,
+  "version": 3,
   "portableStatus": {
     "schemaVersion": "3.0.0",
     "requiredFields": [
@@ -44,6 +44,7 @@
   "sessionSafety": {
     "unavailableInventory": "fail-closed",
     "localSession": "protect-unless-authorized",
+    "localEvictionAcknowledgement": "required",
     "prepareDecision": {
       "noLocalSession": "continue",
       "dedicatedLocalSession": "refuse",
@@ -61,7 +62,9 @@
   },
   "leaseExpiry": {
     "unexpiredLease": "retain",
-    "expiredLease": "release-once"
+    "expiredLease": "release",
+    "knownPreEffectFailure": "retry",
+    "partialOrUnknownFailure": "recovery-required"
   },
   "operationStatus": {
     "missingOperation": "not-found",
@@ -199,7 +202,7 @@
       }
     },
     {
-      "id": "leases.expiry-watchdog-releases-once",
+      "id": "leases.expiry-watchdog-cleans-expired-lease",
       "windows": {
         "file": "labstation/tests/LeaseDispatcherTests.ahk",
         "test": "TestLeaseExpiryWatchdogReleasesExpiredLease"

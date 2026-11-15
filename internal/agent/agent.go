@@ -25,15 +25,17 @@ import (
 )
 
 type Agent struct {
-	Config            config.Config
-	Runtime           host.Runtime
-	runHelper         func(context.Context, []byte) error
-	cleanWorkData     func() error
-	rebootMarker      func() bool
-	secretProbe       func() bool
-	mu                sync.Mutex
-	disconnectMu      sync.Mutex
-	disconnectedSince time.Time
+	Config                        config.Config
+	Runtime                       host.Runtime
+	runHelper                     func(context.Context, []byte) error
+	cleanWorkData                 func() error
+	cleanFMUExecutorStateOverride func(context.Context) error
+	waitGraceFn                   func(context.Context, int) error
+	rebootMarker                  func() bool
+	secretProbe                   func() bool
+	mu                            sync.Mutex
+	disconnectMu                  sync.Mutex
+	disconnectedSince             time.Time
 }
 
 type Result struct {
@@ -99,6 +101,24 @@ func (a *Agent) Execute(ctx context.Context, id, command string, args []string) 
 	result := Result{ID: id, Command: command, CompletedAt: time.Now().UTC().Format(time.RFC3339Nano), Success: code < 2, ExitCode: code, Outcome: outcome, Message: message, Options: append([]string(nil), args...), Stdout: stdout, Stderr: stderr, DurationMs: time.Since(started).Milliseconds(), Metadata: metadata}
 	a.recordOperation(result)
 	return result
+}
+
+// ExecuteOperator routes unscoped operator lifecycle commands through the
+// same lease admission checks as dispatcher protocol 1. Reservation-bound
+// commands must continue to use dispatcher protocol 2 with lease context.
+func (a *Agent) ExecuteOperator(ctx context.Context, id, command string, args []string) Result {
+	if id == "" {
+		id = newID()
+	}
+	request := Request{ID: id, Operation: "execute", Command: command, Args: args}
+	switch command {
+	case "prepare-session":
+		return a.executeOperatorPrepare(ctx, request)
+	case "release-session":
+		return a.executeOperatorRelease(ctx, request)
+	default:
+		return a.Execute(ctx, id, command, args)
+	}
 }
 
 func operationBudget(command string, args []string) time.Duration {
@@ -487,21 +507,25 @@ func (a *Agent) localMode(action string, args []string) (int, string, string, ma
 
 func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string, map[string]any) {
 	if err := ctx.Err(); err != nil {
-		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
+		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED", "retryable": true}
 	}
 	guardOptions, guardErr := parseSessionGuardOptions(args, a.Config.GuardGraceSeconds, false)
 	if guardErr != nil {
 		return 2, "", guardErr.Error(), map[string]any{"code": "STATION_COMMAND_REJECTED"}
 	}
 	if a.Config.Profile == "fmu-only" {
-		return 2, "", "profile does not support a physical laboratory session", map[string]any{"code": "STATION_PROFILE_UNSUPPORTED"}
+		return 2, "", "profile does not support a physical laboratory session", map[string]any{"code": "STATION_PROFILE_UNSUPPORTED", "retryable": true}
 	}
 	if a.localModeEnabled() {
-		return 2, "", "local mode is active", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE"}
+		return 2, "", "local mode is active", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": true}
 	}
-	local, _, sessionsOK := a.hostRuntime().Sessions()
+	manualMaintenance, _ := ctx.Value(manualPrepareContextKey{}).(bool)
+	local, remote, sessionsOK := a.hostRuntime().Sessions()
 	if !sessionsOK {
-		return 2, "", "session inventory unavailable; refusing to prepare station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED"}
+		return 2, "", "session inventory unavailable; refusing to prepare station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
+	}
+	if manualMaintenance && hasLabUserRemote(remote) {
+		return manualPrepareRemoteSessionRefusal()
 	}
 	localSessionDecision := localSessionPrepareDecision(a.Config.Profile, len(local), a.Config.AllowLocalSessionEviction)
 	if localSessionDecision == "refuse" {
@@ -509,42 +533,66 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 		if a.Config.Profile == "hybrid" {
 			message = "instructor session is active; local-session eviction is disabled"
 		}
-		return 2, "", message, map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": local}
+		return 2, "", message, map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": local, "retryable": true}
 	}
-	notificationDelivered := false
-	notificationWarning := false
+	acknowledgedSessions := 0
+	releasedSessionCount := 0
 	if localSessionDecision == "evict" {
-		if !guardOptions.NoGuard && guardOptions.Notify {
-			if err := a.hostRuntime().NotifyLocalUsers(guardOptions.Message); err == nil {
-				notificationDelivered = true
-			} else {
-				notificationWarning = true
-			}
-		}
 		if a.Config.Profile == "hybrid" {
 			if !guardOptions.NoGuard {
 				graceSeconds := guardOptions.GraceSeconds
 				if graceSeconds < 30 {
 					graceSeconds = 30
 				}
-				if err := waitGrace(ctx, graceSeconds); err != nil {
-					return 2, "", "session guard was cancelled", map[string]any{"code": "STATION_GUARD_CANCELLED"}
+				if !guardOptions.Notify {
+					return localSessionAcknowledgementFailure(0, "session notification is disabled")
+				}
+				graceDeadline := time.Now().Add(time.Duration(graceSeconds) * time.Second)
+				for _, session := range local {
+					remaining := remainingGraceSeconds(graceDeadline)
+					if remaining <= 0 {
+						currentLocal, _, currentOK := a.hostRuntime().Sessions()
+						if !currentOK {
+							return 2, "", "session inventory unavailable after the confirmation deadline", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true, "cleanupSkipped": true}
+						}
+						if sessionSnapshotContainsID(currentLocal, fmt.Sprint(session["id"])) {
+							return localSessionAcknowledgementFailure(acknowledgedSessions, "session acknowledgement timed out")
+						}
+						continue
+					}
+					if err := a.helper(ctx, helperSessionAcknowledgementRequest(session, guardOptions.Message, remaining)); err != nil {
+						currentLocal, _, currentOK := a.hostRuntime().Sessions()
+						if !currentOK {
+							return 2, "", "session inventory unavailable after the confirmation prompt", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true, "cleanupSkipped": true}
+						}
+						if sessionSnapshotContainsID(currentLocal, fmt.Sprint(session["id"])) {
+							return localSessionAcknowledgementFailure(acknowledgedSessions, "session did not acknowledge the warning")
+						}
+						continue
+					}
+					acknowledgedSessions++
+				}
+				if err := a.waitSessionGrace(ctx, remainingGraceSeconds(graceDeadline)); err != nil {
+					return 2, "", "session guard was cancelled", map[string]any{"code": "STATION_GUARD_CANCELLED", "retryable": true}
 				}
 			}
 			if a.localModeEnabled() {
-				return 2, "", "local mode became active during the session guard", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE"}
+				return 2, "", "local mode became active during the session guard", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": true}
 			}
 			currentLocal, _, currentOK := a.hostRuntime().Sessions()
 			if !currentOK || !sameSessionSnapshot(local, currentLocal) {
-				return 2, "", "local session inventory changed during the session guard", map[string]any{"code": "STATION_SESSION_CHANGED"}
+				return 2, "", "local session inventory changed during the session guard", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
 			}
-			for _, session := range local {
+			releasedSessionCount = len(currentLocal)
+			releaseStarted := false
+			for _, session := range currentLocal {
 				if a.localModeEnabled() {
-					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE"}
+					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": !releaseStarted}
 				}
 				if err := a.helper(ctx, helperSessionRequest(session, false, 0)); err != nil {
 					return 2, "", "unable to release instructor session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
+				releaseStarted = true
 			}
 			remainingLocal, _, currentOK := a.hostRuntime().Sessions()
 			if !currentOK || len(remainingLocal) != 0 {
@@ -554,7 +602,16 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	} else {
 		currentLocal, _, currentOK := a.hostRuntime().Sessions()
 		if !currentOK || len(currentLocal) != 0 || a.localModeEnabled() {
-			return 2, "", "station state changed while preparing", map[string]any{"code": "STATION_SESSION_CHANGED"}
+			return 2, "", "station state changed while preparing", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
+		}
+	}
+	if manualMaintenance {
+		_, currentRemote, currentOK := a.hostRuntime().Sessions()
+		if !currentOK {
+			return 2, "", "session inventory unavailable before cleanup; no cleanup ran", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
+		}
+		if hasLabUserRemote(currentRemote) {
+			return manualPrepareRemoteSessionRefusal()
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -582,18 +639,40 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
 	}
 	_ = os.MkdirAll(a.Config.StateDir, 0750)
-	a.appendEvent(map[string]any{"kind": "prepare-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "sessionsReleased": len(local), "notificationDelivered": notificationDelivered, "cleanupWarnings": cleanupWarnings})
-	code := 0
-	message := "station prepared"
-	if notificationWarning {
-		code = 1
-		message = "station prepared; session notification could not be delivered"
-	}
+	a.appendEvent(map[string]any{"kind": "prepare-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "sessionsReleased": releasedSessionCount, "acknowledgedSessions": acknowledgedSessions, "guardBypassed": guardOptions.NoGuard && localSessionDecision == "evict", "cleanupWarnings": cleanupWarnings})
 	if len(cleanupWarnings) > 0 {
-		code = 1
-		message = "station prepared with cleanup warnings"
+		message := "station preparation requires recovery because cleanup was incomplete"
+		return 2, "", message, map[string]any{"code": "STATION_PREPARE_CLEANUP_FAILED", "profile": a.Config.Profile, "releasedSessions": releasedSessionCount, "acknowledgedSessions": acknowledgedSessions, "cleanupWarnings": cleanupWarnings}
 	}
-	return code, message, "", map[string]any{"profile": a.Config.Profile, "releasedSessions": len(local), "notificationDelivered": notificationDelivered, "cleanupWarnings": cleanupWarnings}
+	return 0, "station prepared", "", map[string]any{"profile": a.Config.Profile, "releasedSessions": releasedSessionCount, "acknowledgedSessions": acknowledgedSessions, "guardBypassed": guardOptions.NoGuard && localSessionDecision == "evict", "cleanupWarnings": cleanupWarnings}
+}
+
+func localSessionAcknowledgementFailure(acknowledged int, reason string) (int, string, string, map[string]any) {
+	message := "local session was not acknowledged; no session was closed. " + reason + ". Retry Prepare after the instructor can respond or signs out."
+	if reason == "session notification is disabled" {
+		message = "local-session acknowledgement is required, but the confirmation prompt is disabled; no session was closed. Enable the prompt or use the explicit --no-guard administrative bypass."
+	}
+	return 2, "", message, map[string]any{"code": "STATION_SESSION_ACKNOWLEDGEMENT_REQUIRED", "retryable": true, "cleanupSkipped": true, "acknowledgedSessions": acknowledged}
+}
+
+func remainingGraceSeconds(deadline time.Time) int {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return 0
+	}
+	return int((remaining + time.Second - 1) / time.Second)
+}
+
+func (a *Agent) waitSessionGrace(ctx context.Context, seconds int) error {
+	if a.waitGraceFn != nil {
+		return a.waitGraceFn(ctx, seconds)
+	}
+	return waitGrace(ctx, seconds)
+}
+
+func manualPrepareRemoteSessionRefusal() (int, string, string, map[string]any) {
+	message := "Manual Prepare deletes LABUSER temporary files, Downloads, and lab scratch data and may interrupt open apps. An active remote LABUSER session was detected, so no cleanup ran. Run Release or log off the session before retrying."
+	return 2, "", message, map[string]any{"code": "STATION_REMOTE_SESSION_ACTIVE", "retryable": true, "cleanupSkipped": true}
 }
 
 func localSessionPrepareDecision(profile string, localSessionCount int, allowEviction bool) string {
@@ -608,14 +687,15 @@ func localSessionPrepareDecision(profile string, localSessionCount int, allowEvi
 
 func (a *Agent) release(ctx context.Context, args []string) (int, string, string, map[string]any) {
 	if err := ctx.Err(); err != nil {
-		return 2, "", "session release was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
+		return 2, "", "session release was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED", "retryable": true}
 	}
 	if a.Config.Profile == "fmu-only" {
-		return 2, "", "profile does not support a physical laboratory session", map[string]any{"code": "STATION_PROFILE_UNSUPPORTED"}
+		return 2, "", "profile does not support a physical laboratory session", map[string]any{"code": "STATION_PROFILE_UNSUPPORTED", "retryable": false}
 	}
 	reboot := false
 	requireRDPDisconnected := false
 	rebootTimeout := 0
+	rebootTimeoutProvided := false
 	for _, arg := range args {
 		key, value, hasValue := strings.Cut(arg, "=")
 		switch key {
@@ -624,29 +704,30 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 		case "--reboot":
 			enabled, err := booleanOptionValue(value, hasValue, true)
 			if err != nil {
-				return 2, "", err.Error(), map[string]any{"code": "STATION_COMMAND_REJECTED"}
+				return 2, "", err.Error(), map[string]any{"code": "STATION_COMMAND_REJECTED", "retryable": false}
 			}
 			reboot = enabled
 		case "--reboot-timeout":
 			if !hasValue {
-				return 2, "", "reboot timeout requires --reboot-timeout=seconds", map[string]any{"code": "STATION_COMMAND_REJECTED"}
+				return 2, "", "reboot timeout requires --reboot-timeout=seconds", map[string]any{"code": "STATION_COMMAND_REJECTED", "retryable": false}
 			}
 			seconds, err := strconv.Atoi(value)
 			if err != nil || seconds < 0 || seconds > 30 {
-				return 2, "", "reboot timeout must be between 0 and 30 seconds", map[string]any{"code": "STATION_COMMAND_REJECTED"}
+				return 2, "", "reboot timeout must be between 0 and 30 seconds", map[string]any{"code": "STATION_COMMAND_REJECTED", "retryable": false}
 			}
 			rebootTimeout = seconds
+			rebootTimeoutProvided = true
 		}
 	}
 	_, remote, sessionsOK := a.hostRuntime().Sessions()
 	if !sessionsOK {
-		return 2, "", "session inventory unavailable; refusing to release station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED"}
+		return 2, "", "session inventory unavailable; refusing to release station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
 	}
 	if requireRDPDisconnected {
 		if connected, known := a.hostRuntime().RDPClientsConnected(); !known {
-			return 2, "", "RDP connection state is unavailable; refusing automatic session release", map[string]any{"code": "STATION_RDP_CLIENT_STATE_UNKNOWN"}
+			return 2, "", "RDP connection state is unavailable; refusing automatic session release", map[string]any{"code": "STATION_RDP_CLIENT_STATE_UNKNOWN", "retryable": true}
 		} else if connected {
-			return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED"}
+			return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED", "retryable": false}
 		}
 	}
 	terminated := 0
@@ -654,46 +735,114 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 		if session["user"] == "labuser" && session["type"] == "x11" {
 			if requireRDPDisconnected {
 				if connected, known := a.hostRuntime().RDPClientsConnected(); !known {
-					return 2, "", "RDP connection state is unavailable; refusing automatic session release", map[string]any{"code": "STATION_RDP_CLIENT_STATE_UNKNOWN"}
+					return 2, "", "RDP connection state is unavailable; refusing automatic session release", map[string]any{"code": "STATION_RDP_CLIENT_STATE_UNKNOWN", "retryable": true}
 				} else if connected {
-					return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED"}
+					return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED", "retryable": false}
 				}
 			}
 			if err := a.helper(ctx, helperSessionRequest(session, true, a.Config.Application.CloseTimeoutSeconds)); err != nil {
-				return 2, "", "unable to close Tiny Desk session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
+				return 2, "", "unable to close Tiny Desk session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED", "retryable": false}
 			}
 			terminated++
 		}
 	}
-	rebootRequested := false
+	rebootScheduled := false
+	rebootDeferred := false
+	rebootReason := ""
+	fmuCleanupAttempted := false
+	fmuCleanupCompleted := false
+	releaseMetadata := func() map[string]any {
+		metadata := map[string]any{
+			"profile":               a.Config.Profile,
+			"closedLabuserSessions": terminated,
+			"fmuCleanupAttempted":   fmuCleanupAttempted,
+			"fmuCleanupCompleted":   fmuCleanupCompleted,
+			"retryable":             false,
+			"rebootRequested":       reboot,
+			"rebootScheduled":       rebootScheduled,
+			"rebootDeferred":        rebootDeferred,
+		}
+		if rebootReason != "" {
+			metadata["rebootReason"] = rebootReason
+		}
+		if reboot || rebootTimeoutProvided {
+			metadata["rebootTimeout"] = rebootTimeout
+		}
+		return metadata
+	}
+	recordReleaseEvent := func() {
+		event := map[string]any{
+			"kind":                  "release-session",
+			"timestamp":             time.Now().UTC().Format(time.RFC3339Nano),
+			"closedLabuserSessions": terminated,
+			"fmuCleanupAttempted":   fmuCleanupAttempted,
+			"fmuCleanupCompleted":   fmuCleanupCompleted,
+			"retryable":             false,
+			"rebootRequested":       reboot,
+			"rebootScheduled":       rebootScheduled,
+			"rebootDeferred":        rebootDeferred,
+		}
+		if rebootReason != "" {
+			event["rebootReason"] = rebootReason
+		}
+		if reboot || rebootTimeoutProvided {
+			event["rebootTimeout"] = rebootTimeout
+		}
+		a.appendEvent(event)
+	}
+	fmuCleanupAttempted = true
+	if err := a.cleanFMUExecutorState(ctx); err != nil {
+		a.log("release-fmu-cleanup-failed", map[string]any{"error": err.Error()})
+		if reboot {
+			rebootDeferred = true
+			rebootReason = "FMU Executor cleanup failed"
+		}
+		recordReleaseEvent()
+		metadata := releaseMetadata()
+		metadata["code"] = "STATION_FMU_CLEANUP_FAILED"
+		return 2, "Release-session failed because FMU Executor sessions or temporary state could not be fully cleaned", "", metadata
+	}
+	fmuCleanupCompleted = true
 	if reboot {
 		deadline := time.Now().Add(time.Duration(rebootTimeout) * time.Second)
 		for {
 			local, remote, sessionsOK := a.hostRuntime().Sessions()
 			if !sessionsOK {
-				return 1, "station released; reboot deferred because session inventory is unavailable", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": false, "reason": "session query failed"}
+				rebootDeferred = true
+				rebootReason = "session query failed"
+				recordReleaseEvent()
+				return 1, "station released; reboot deferred because session inventory is unavailable", "", releaseMetadata()
 			}
 			if len(local) == 0 && !hasLabUserRemote(remote) {
 				break
 			}
 			if rebootTimeout == 0 || !time.Now().Before(deadline) {
-				return 1, "station released; reboot deferred while users are active", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": false, "reason": "active user sessions", "rebootTimeoutSeconds": rebootTimeout}
+				rebootDeferred = true
+				rebootReason = "active user sessions"
+				recordReleaseEvent()
+				return 1, "station released; reboot deferred while users are active", "", releaseMetadata()
 			}
 			timer := time.NewTimer(time.Second)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return 1, "station released; reboot wait was cancelled", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": false, "reason": "reboot wait cancelled"}
+				rebootDeferred = true
+				rebootReason = "reboot wait cancelled"
+				recordReleaseEvent()
+				return 1, "station released; reboot wait was cancelled", "", releaseMetadata()
 			case <-timer.C:
 			}
 		}
 		if err := a.helper(ctx, map[string]any{"operation": "power-reboot"}); err != nil {
-			return 2, "station released; reboot request failed", "", map[string]any{"code": "STATION_POWER_FAILED", "profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": false}
+			rebootDeferred = true
+			rebootReason = "reboot request failed"
+			recordReleaseEvent()
+			return 1, "station released; reboot request failed", "", releaseMetadata()
 		}
-		rebootRequested = true
+		rebootScheduled = true
 	}
-	a.appendEvent(map[string]any{"kind": "release-session", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "closedLabuserSessions": terminated, "rebootRequested": rebootRequested, "rebootTimeoutSeconds": rebootTimeout})
-	return 0, "station released", "", map[string]any{"profile": a.Config.Profile, "closedLabuserSessions": terminated, "rebootRequested": rebootRequested, "rebootTimeoutSeconds": rebootTimeout}
+	recordReleaseEvent()
+	return 0, "station released", "", releaseMetadata()
 }
 
 func helperSessionRequest(session map[string]any, force bool, closeTimeoutSeconds int) map[string]any {
@@ -718,21 +867,64 @@ func helperSessionRequest(session map[string]any, force bool, closeTimeoutSecond
 	}
 }
 
+func helperSessionAcknowledgementRequest(session map[string]any, message string, timeoutSeconds int) map[string]any {
+	remote := "no"
+	switch value := session["remote"].(type) {
+	case bool:
+		if value {
+			remote = "yes"
+		}
+	case string:
+		remote = value
+	}
+	return map[string]any{
+		"operation":      "confirm-local-session",
+		"sessionId":      fmt.Sprint(session["id"]),
+		"sessionUser":    fmt.Sprint(session["user"]),
+		"sessionRemote":  remote,
+		"sessionSeat":    fmt.Sprint(session["seat"]),
+		"sessionType":    fmt.Sprint(session["type"]),
+		"message":        message,
+		"timeoutSeconds": timeoutSeconds,
+	}
+}
+
 func sameSessionSnapshot(before, after []map[string]any) bool {
-	if len(before) != len(after) {
+	if len(after) > len(before) {
 		return false
+	}
+	original := make(map[string]map[string]any, len(before))
+	for _, session := range before {
+		id := fmt.Sprint(session["id"])
+		if _, exists := original[id]; exists {
+			return false
+		}
+		original[id] = session
 	}
 	index := make(map[string]map[string]any, len(after))
 	for _, session := range after {
-		index[fmt.Sprint(session["id"])] = session
+		id := fmt.Sprint(session["id"])
+		if _, exists := index[id]; exists {
+			return false
+		}
+		index[id] = session
 	}
-	for _, session := range before {
-		current, found := index[fmt.Sprint(session["id"])]
+	for id, current := range index {
+		session, found := original[id]
 		if !found || fmt.Sprint(current["user"]) != fmt.Sprint(session["user"]) || fmt.Sprint(current["remote"]) != fmt.Sprint(session["remote"]) || fmt.Sprint(current["seat"]) != fmt.Sprint(session["seat"]) || fmt.Sprint(current["type"]) != fmt.Sprint(session["type"]) {
 			return false
 		}
 	}
 	return true
+}
+
+func sessionSnapshotContainsID(sessions []map[string]any, expectedID string) bool {
+	for _, session := range sessions {
+		if fmt.Sprint(session["id"]) == expectedID {
+			return true
+		}
+	}
+	return false
 }
 
 type sessionGuardOptions struct {
@@ -852,7 +1044,7 @@ func (a *Agent) guard(ctx context.Context, args []string) (int, string, string, 
 			}
 		}
 		if options.GraceSeconds > 0 {
-			if err := waitGrace(ctx, options.GraceSeconds); err != nil {
+			if err := a.waitSessionGrace(ctx, options.GraceSeconds); err != nil {
 				return 2, "", "session guard was cancelled", map[string]any{"code": "STATION_GUARD_CANCELLED"}
 			}
 		}

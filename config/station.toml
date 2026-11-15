@@ -1,7 +1,7 @@
 [station]
 name = "lab-linux-01"
 profile = "dedicated"
-version = "0.1.0"
+version = "0.5.0"
 state_dir = "/var/lib/decentralabs/lab-station/data"
 config_dir = "/etc/decentralabs/lab-station"
 log_dir = "/var/log/decentralabs/lab-station"

@@ -45,9 +45,10 @@ type portableParityMatrix struct {
 	PortableStatus portableStatusVector      `json:"portableStatus"`
 	Platforms      map[string]parityPlatform `json:"platforms"`
 	SessionSafety  struct {
-		UnavailableInventory string            `json:"unavailableInventory"`
-		LocalSession         string            `json:"localSession"`
-		PrepareDecision      map[string]string `json:"prepareDecision"`
+		UnavailableInventory         string            `json:"unavailableInventory"`
+		LocalSession                 string            `json:"localSession"`
+		LocalEvictionAcknowledgement string            `json:"localEvictionAcknowledgement"`
+		PrepareDecision              map[string]string `json:"prepareDecision"`
 	} `json:"sessionSafety"`
 	PrepareCleanup struct {
 		RequiredCategories []string `json:"requiredCategories"`
@@ -58,8 +59,10 @@ type portableParityMatrix struct {
 		ExpiredLegacyTimestamp string `json:"expiredLegacyTimestamp"`
 	} `json:"localMode"`
 	LeaseExpiry struct {
-		UnexpiredLease string `json:"unexpiredLease"`
-		ExpiredLease   string `json:"expiredLease"`
+		UnexpiredLease          string `json:"unexpiredLease"`
+		ExpiredLease            string `json:"expiredLease"`
+		KnownPreEffectFailure   string `json:"knownPreEffectFailure"`
+		PartialOrUnknownFailure string `json:"partialOrUnknownFailure"`
 	} `json:"leaseExpiry"`
 	OperationStatus struct {
 		MissingOperation   string `json:"missingOperation"`
@@ -213,7 +216,7 @@ func assertPortableStatusContract(t *testing.T, status map[string]any, platformN
 
 func TestPortableParityManifestReferencesImplementedTests(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
-	if matrix.Version != 2 || matrix.PortableStatus.SchemaVersion != "3.0.0" {
+	if matrix.Version != 3 || matrix.PortableStatus.SchemaVersion != "3.0.0" {
 		t.Fatalf("unexpected portable matrix version/contract: %#v", matrix)
 	}
 	if len(matrix.SharedScenarios) == 0 {

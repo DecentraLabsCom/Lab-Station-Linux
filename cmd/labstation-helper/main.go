@@ -27,6 +27,8 @@ type request struct {
 	Action              string `json:"action"`
 	SecretID            string `json:"secretId"`
 	SecretValue         string `json:"secretValue"`
+	Message             string `json:"message"`
+	TimeoutSeconds      int    `json:"timeoutSeconds"`
 	SessionUser         string `json:"sessionUser"`
 	SessionRemote       string `json:"sessionRemote"`
 	SessionSeat         string `json:"sessionSeat"`
@@ -141,7 +143,7 @@ func requestOperationClass(operation string) string {
 	switch operation {
 	case "lease-admission":
 		return "admission"
-	case "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "fmu-clean-temp", "tiny-desk-clean", "secret-set", "secret-clear", "secret-status", "labuser-password-status":
+	case "confirm-local-session", "terminate-session", "power-shutdown", "power-hibernate", "power-reboot", "service-action", "fmu-clean-temp", "tiny-desk-clean", "secret-set", "secret-clear", "secret-status", "labuser-password-status":
 		return "control"
 	default:
 		return ""
@@ -182,6 +184,8 @@ func helperOperationBudget(operation string) time.Duration {
 	switch operation {
 	case "terminate-session":
 		return 25 * time.Second
+	case "confirm-local-session":
+		return 2 * time.Minute
 	case "service-action", "fmu-clean-temp", "tiny-desk-clean", "secret-set", "secret-clear":
 		return 90 * time.Second
 	case "power-shutdown", "power-hibernate", "power-reboot":
@@ -193,6 +197,8 @@ func helperOperationBudget(operation string) time.Duration {
 
 func executeWithContext(ctx context.Context, request request) error {
 	switch request.Operation {
+	case "confirm-local-session":
+		return confirmLocalSession(ctx, request)
 	case "terminate-session":
 		if !sessionID.MatchString(request.SessionID) {
 			return errors.New("invalid session id")

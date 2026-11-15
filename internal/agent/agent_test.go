@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,28 +35,53 @@ func (f fakeSupervisor) ServiceState(unit string) (string, error) {
 func (f fakeSupervisor) ServiceAction(string, string) error { return f.err }
 
 type fakeRuntime struct {
-	supervisor    host.Supervisor
-	interfaces    []map[string]string
-	local         []map[string]any
-	remote        []map[string]any
-	sessionsOK    bool
-	wakeOK        bool
-	wakeOn        bool
-	wakeSaved     bool
-	hibernate     bool
-	notifyErr     error
-	notices       []string
-	notifyStarted chan struct{}
-	notifyRelease <-chan struct{}
-	rdpConnected  bool
-	rdpStateKnown bool
-	rdpState      func() (bool, bool)
+	supervisor           host.Supervisor
+	interfaces           []map[string]string
+	local                []map[string]any
+	sessionSnapshots     [][]map[string]any
+	sessionSnapshotIndex int
+	remoteSnapshots      [][]map[string]any
+	remoteSnapshotIndex  int
+	remote               []map[string]any
+	sessionsOK           bool
+	wakeOK               bool
+	wakeOn               bool
+	wakeSaved            bool
+	hibernate            bool
+	notifyErr            error
+	notices              []string
+	confirmationErr      error
+	confirmations        []string
+	notifyStarted        chan struct{}
+	notifyRelease        <-chan struct{}
+	rdpConnected         bool
+	rdpStateKnown        bool
+	rdpState             func() (bool, bool)
 }
 
 func (f *fakeRuntime) Supervisor() host.Supervisor            { return f.supervisor }
 func (f *fakeRuntime) NetworkInterfaces() []map[string]string { return f.interfaces }
 func (f *fakeRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
-	return append([]map[string]any(nil), f.local...), append([]map[string]any(nil), f.remote...), f.sessionsOK
+	remote := f.remote
+	if len(f.remoteSnapshots) > 0 {
+		index := f.remoteSnapshotIndex
+		if index >= len(f.remoteSnapshots) {
+			index = len(f.remoteSnapshots) - 1
+		} else if f.remoteSnapshotIndex < len(f.remoteSnapshots)-1 {
+			f.remoteSnapshotIndex++
+		}
+		remote = f.remoteSnapshots[index]
+	}
+	if len(f.sessionSnapshots) > 0 {
+		index := f.sessionSnapshotIndex
+		if index >= len(f.sessionSnapshots) {
+			index = len(f.sessionSnapshots) - 1
+		} else if f.sessionSnapshotIndex < len(f.sessionSnapshots)-1 {
+			f.sessionSnapshotIndex++
+		}
+		return append([]map[string]any(nil), f.sessionSnapshots[index]...), append([]map[string]any(nil), remote...), f.sessionsOK
+	}
+	return append([]map[string]any(nil), f.local...), append([]map[string]any(nil), remote...), f.sessionsOK
 }
 func (f *fakeRuntime) RDPClientsConnected() (bool, bool) {
 	if f.rdpState != nil {
@@ -110,6 +136,10 @@ func newTestAgent(t *testing.T, profile string, runtime *fakeRuntime) (*Agent, *
 			return err
 		}
 		*calls = append(*calls, request)
+		if request["operation"] == "confirm-local-session" {
+			runtime.confirmations = append(runtime.confirmations, fmt.Sprint(request["sessionId"]))
+			return runtime.confirmationErr
+		}
 		if request["operation"] == "terminate-session" {
 			if sessionID, ok := request["sessionId"].(string); ok {
 				runtime.local = removeSessionByID(runtime.local, sessionID)
@@ -347,6 +377,20 @@ func TestStatusSummaryTracksPrimaryCapability(t *testing.T) {
 	}
 }
 
+func TestStatusLocalSessionIncludesLABUSERPhysicalConsole(t *testing.T) {
+	runtime := &fakeRuntime{
+		supervisor: fakeSupervisor{name: "systemd"},
+		local:      []map[string]any{{"id": "console-1", "user": "labuser", "kind": "local", "active": true}},
+		sessionsOK: true,
+	}
+	a, _ := newTestAgent(t, "dedicated", runtime)
+	status := a.Status()
+	sessions, ok := status["sessions"].(map[string]any)
+	if !ok || sessions["localSessionActive"] != true {
+		t.Fatalf("a physical LABUSER console session must be reported as local: %#v", status["sessions"])
+	}
+}
+
 func TestPrepareLocalSessionPolicyMatchesSharedMatrix(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
 	policy := matrix.SessionSafety.PrepareDecision
@@ -396,6 +440,80 @@ func TestPrepareSessionRefusesUnsafeProfilesAndReleasesHybridSessions(t *testing
 	}
 }
 
+func TestPrepareRequiresLocalSessionAcknowledgementBeforeEviction(t *testing.T) {
+	if policy := loadPortableParityMatrix(t).SessionSafety.LocalEvictionAcknowledgement; policy != "required" {
+		t.Fatalf("shared local-session acknowledgement policy = %q", policy)
+	}
+	teacher := map[string]any{"id": "seat-7", "user": "teacher", "remote": false, "seat": "seat0", "type": "wayland", "kind": "local"}
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, local: []map[string]any{teacher}, sessionsOK: true, confirmationErr: errors.New("instructor declined")}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+	a.Config.AllowLocalSessionEviction = true
+	cleaned := false
+	a.cleanWorkData = func() error { cleaned = true; return nil }
+
+	result := a.Execute(context.Background(), "prepare-needs-ack", "prepare-session", nil)
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_SESSION_ACKNOWLEDGEMENT_REQUIRED" || result.Metadata["retryable"] != true {
+		t.Fatalf("Prepare must fail retryably when the instructor does not acknowledge: %#v", result)
+	}
+	if len(runtime.confirmations) != 1 || runtime.confirmations[0] != "seat-7" || len(*calls) != 1 || (*calls)[0]["operation"] != "confirm-local-session" {
+		t.Fatalf("Prepare must request acknowledgement for the local session and stop before logoff: confirmation=%#v helper=%#v", runtime.confirmations, *calls)
+	}
+	if cleaned || len(runtime.local) != 1 {
+		t.Fatalf("Prepare changed session/workspace state without acknowledgement: cleaned=%v local=%#v", cleaned, runtime.local)
+	}
+}
+
+func TestPrepareEvictsOnlyAfterLocalSessionAcknowledgementAndGrace(t *testing.T) {
+	teacher := map[string]any{"id": "seat-8", "user": "teacher", "remote": false, "seat": "seat0", "type": "x11", "kind": "local"}
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, local: []map[string]any{teacher}, sessionsOK: true}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+	a.Config.AllowLocalSessionEviction = true
+	var graceSeconds int
+	a.waitGraceFn = func(_ context.Context, seconds int) error { graceSeconds = seconds; return nil }
+
+	result := a.Execute(context.Background(), "prepare-after-ack", "prepare-session", nil)
+	if result.ExitCode != 0 || result.Metadata["acknowledgedSessions"] != 1 {
+		t.Fatalf("Prepare did not record the instructor acknowledgement: %#v", result)
+	}
+	if graceSeconds != 30 || len(runtime.confirmations) != 1 || len(*calls) != 2 || (*calls)[0]["operation"] != "confirm-local-session" || (*calls)[1]["operation"] != "terminate-session" {
+		t.Fatalf("Prepare must acknowledge, wait the minimum grace, then evict: grace=%d confirmations=%#v helper=%#v", graceSeconds, runtime.confirmations, *calls)
+	}
+}
+
+func TestSameSessionSnapshotAllowsVoluntaryLogoutButRejectsNewOrChangedSessions(t *testing.T) {
+	teacher := map[string]any{"id": "local-1", "user": "teacher", "remote": false, "seat": "seat0", "type": "wayland"}
+	student := map[string]any{"id": "local-2", "user": "student", "remote": false, "seat": "seat0", "type": "wayland"}
+	newUser := map[string]any{"id": "local-3", "user": "new-user", "remote": false, "seat": "seat0", "type": "wayland"}
+	changedTeacher := map[string]any{"id": "local-1", "user": "teacher", "remote": true, "seat": "seat0", "type": "wayland"}
+
+	if !sameSessionSnapshot([]map[string]any{teacher, student}, []map[string]any{student}) {
+		t.Fatal("a user voluntarily signing out during the warning period should be accepted")
+	}
+	if sameSessionSnapshot([]map[string]any{teacher}, []map[string]any{teacher, newUser}) {
+		t.Fatal("a new session during the warning period should be rejected")
+	}
+	if sameSessionSnapshot([]map[string]any{teacher}, []map[string]any{changedTeacher}) {
+		t.Fatal("a changed session identity should be rejected")
+	}
+}
+
+func TestPrepareContinuesWhenInstructorSignsOutDuringGuard(t *testing.T) {
+	teacher := map[string]any{"id": "local-1", "user": "teacher", "kind": "local"}
+	runtime := &fakeRuntime{
+		supervisor:       fakeSupervisor{name: "systemd"},
+		sessionSnapshots: [][]map[string]any{{teacher}, {}, {}},
+		sessionsOK:       true,
+	}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+	a.Config.AllowLocalSessionEviction = true
+
+	result := a.Execute(context.Background(), "prepare-voluntary-signout", "prepare-session", []string{"--no-guard"})
+
+	if result.ExitCode != 0 || result.Metadata["releasedSessions"] != 0 || len(*calls) != 0 {
+		t.Fatalf("a voluntary instructor sign-out should complete without a forced termination: result=%#v helper=%#v", result, *calls)
+	}
+}
+
 func TestPrepareSessionFailsClosedWhenSessionInventoryUnavailable(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
 	if matrix.SessionSafety.UnavailableInventory != "fail-closed" {
@@ -406,6 +524,34 @@ func TestPrepareSessionFailsClosedWhenSessionInventoryUnavailable(t *testing.T) 
 	result := a.Execute(context.Background(), "prepare", "prepare-session", nil)
 	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_SESSION_QUERY_FAILED" {
 		t.Fatalf("preparation should fail closed: %#v", result)
+	}
+}
+
+func TestManualPrepareRefusesRemoteLabUserSessionBeforeCleanup(t *testing.T) {
+	runtime := &fakeRuntime{
+		supervisor: fakeSupervisor{name: "systemd"},
+		remote: []map[string]any{{
+			"id":     "xrdp-session-1",
+			"user":   "labuser",
+			"type":   "x11",
+			"seat":   "",
+			"remote": false,
+			"kind":   "service",
+		}},
+		sessionsOK: true,
+	}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+
+	result := a.ExecuteOperator(context.Background(), "operator-prepare", "prepare-session", nil)
+
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_REMOTE_SESSION_ACTIVE" {
+		t.Fatalf("manual prepare did not refuse the active Tiny Desk session: %#v", result)
+	}
+	if !strings.Contains(result.Message, "Downloads") || !strings.Contains(result.Message, "no cleanup ran") {
+		t.Fatalf("manual prepare did not explain its cleanup effect: %#v", result)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("manual prepare changed files or closed Tiny Desk while the session remained active: %#v", *calls)
 	}
 }
 
@@ -420,6 +566,66 @@ func TestPrepareRunsTinyDeskCleanupThroughPrivilegedHelper(t *testing.T) {
 	}
 	if len(*calls) != 1 || (*calls)[0]["operation"] != "tiny-desk-clean" {
 		t.Fatalf("Tiny Desk cleanup did not use the privileged helper: %#v", *calls)
+	}
+}
+
+func TestManualPrepareRechecksRemoteLabUserBeforeCleanup(t *testing.T) {
+	remoteLabUser := map[string]any{
+		"id":     "xrdp-session-1",
+		"user":   "labuser",
+		"type":   "x11",
+		"seat":   "",
+		"remote": false,
+		"kind":   "service",
+	}
+	runtime := &fakeRuntime{
+		supervisor:      fakeSupervisor{name: "systemd"},
+		remoteSnapshots: [][]map[string]any{{}, {remoteLabUser}},
+		sessionsOK:      true,
+	}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+
+	result := a.ExecuteOperator(context.Background(), "operator-prepare-race", "prepare-session", nil)
+
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_REMOTE_SESSION_ACTIVE" {
+		t.Fatalf("manual prepare did not detect the session before cleanup: %#v", result)
+	}
+	if !result.Metadata["cleanupSkipped"].(bool) || len(*calls) != 0 {
+		t.Fatalf("the newly connected LABUSER session must prevent all cleanup: result=%#v helper=%#v", result, *calls)
+	}
+}
+
+func TestLeasePrepareDoesNotApplyManualRemoteSessionRefusal(t *testing.T) {
+	runtime := &fakeRuntime{
+		supervisor: fakeSupervisor{name: "systemd"},
+		remote: []map[string]any{{
+			"id":     "xrdp-session-1",
+			"user":   "labuser",
+			"type":   "x11",
+			"seat":   "",
+			"remote": false,
+			"kind":   "service",
+		}},
+		sessionsOK: true,
+	}
+	a, _ := newTestAgent(t, "hybrid", runtime)
+
+	result := a.Execute(context.Background(), "reservation-prepare", "prepare-session", nil)
+
+	if result.ExitCode >= 2 || result.Metadata["code"] == "STATION_REMOTE_SESSION_ACTIVE" {
+		t.Fatalf("reservation Prepare must keep its existing lifecycle: %#v", result)
+	}
+}
+
+func TestPrepareCleanupFailureIsARecoveryRequiredFailure(t *testing.T) {
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, sessionsOK: true}
+	a, _ := newTestAgent(t, "hybrid", runtime)
+	a.cleanWorkData = func() error { return errors.New("permission denied") }
+
+	result := a.Execute(context.Background(), "prepare-cleanup-fails", "prepare-session", nil)
+
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_PREPARE_CLEANUP_FAILED" {
+		t.Fatalf("incomplete workspace cleanup must not be reported as a successful warning: %#v", result)
 	}
 }
 
@@ -489,7 +695,7 @@ func TestReleaseTerminatesOnlyTinyDeskAndNeverRebootsWhileLocalUsersRemain(t *te
 	}
 	a, calls := newTestAgent(t, "hybrid", runtime)
 	result := a.Execute(context.Background(), "release-1", "release-session", []string{"--reboot", "--reboot-timeout=0"})
-	if result.ExitCode != 1 || result.Metadata["rebootRequested"] != false || result.Metadata["reason"] != "active user sessions" {
+	if result.ExitCode != 1 || result.Metadata["rebootRequested"] != true || result.Metadata["rebootScheduled"] != false || result.Metadata["rebootDeferred"] != true || result.Metadata["rebootReason"] != "active user sessions" {
 		t.Fatalf("release must defer reboot while a local user remains: %#v", result)
 	}
 	if len(*calls) != 1 || (*calls)[0]["sessionId"] != "rdp-1" || (*calls)[0]["operation"] != "terminate-session" {
@@ -503,6 +709,48 @@ func TestReleaseTerminatesOnlyTinyDeskAndNeverRebootsWhileLocalUsersRemain(t *te
 	}
 	if _, ok := (*calls)[0]["action"]; ok {
 		t.Fatal("management SSH or local user session reached privileged action")
+	}
+}
+
+func TestReleaseCleansFMUExecutorAfterTerminatingTinyDesk(t *testing.T) {
+	runtime := &fakeRuntime{
+		supervisor: fakeSupervisor{name: "systemd"},
+		remote: []map[string]any{{
+			"id": "rdp-1", "user": "labuser", "type": "x11", "remote": false, "seat": "",
+		}},
+		sessionsOK: true,
+	}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	cleanupFollowedSessionTermination := false
+	a.cleanFMUExecutorStateOverride = func(context.Context) error {
+		cleanupFollowedSessionTermination = len(*calls) == 1 && (*calls)[0]["operation"] == "terminate-session"
+		return nil
+	}
+
+	result := a.Execute(context.Background(), "release-fmu-cleanup", "release-session", nil)
+
+	if result.ExitCode != 0 || result.Metadata["fmuCleanupCompleted"] != true {
+		t.Fatalf("Release should complete after cleaning FMU sessions and temporary state: %#v", result)
+	}
+	if !cleanupFollowedSessionTermination {
+		t.Fatalf("FMU cleanup should run after the remote Tiny Desk session ends: %#v", *calls)
+	}
+}
+
+func TestReleaseFMUCleanupFailureBlocksRebootAndRequiresRecovery(t *testing.T) {
+	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, sessionsOK: true}
+	a, calls := newTestAgent(t, "hybrid", runtime)
+	a.cleanFMUExecutorStateOverride = func(context.Context) error { return errors.New("synthetic FMU cleanup failure") }
+
+	result := a.Execute(context.Background(), "release-fmu-cleanup-fails", "release-session", []string{"--reboot"})
+
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_FMU_CLEANUP_FAILED" || result.Metadata["fmuCleanupCompleted"] != false {
+		t.Fatalf("incomplete FMU cleanup must make Release a hard failure: %#v", result)
+	}
+	for _, call := range *calls {
+		if call["operation"] == "power-reboot" {
+			t.Fatalf("Release must not reboot before FMU cleanup completes: %#v", *calls)
+		}
 	}
 }
 
@@ -548,7 +796,7 @@ func TestReleaseRequestsRebootOnlyAfterAllUserSessionsAreGone(t *testing.T) {
 	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, sessionsOK: true}
 	a, calls := newTestAgent(t, "hybrid", runtime)
 	result := a.Execute(context.Background(), "release-reboot", "release-session", []string{"--reboot"})
-	if result.ExitCode != 0 || result.Metadata["rebootRequested"] != true {
+	if result.ExitCode != 0 || result.Metadata["rebootRequested"] != true || result.Metadata["rebootScheduled"] != true {
 		t.Fatalf("empty station should request a release reboot: %#v", result)
 	}
 	if len(*calls) != 1 || (*calls)[0]["operation"] != "power-reboot" {

@@ -49,7 +49,7 @@ $dockerArguments = @(
     '--workdir', '/workspace',
     '--env', "FMU_EXECUTOR_COMMIT=$fmuExecutorCommit",
     $GoImage,
-    'sh', '-c', 'set -eu; mkdir -p /tmp/fmu-executor-source; git -c safe.directory=/fmu-executor-source -C /fmu-executor-source archive --format=tar "$FMU_EXECUTOR_COMMIT" > /tmp/fmu-executor-source.tar; tar -xf /tmp/fmu-executor-source.tar -C /tmp/fmu-executor-source; FMU_EXECUTOR_SOURCE=/tmp/fmu-executor-source go test -race -cover ./...'
+    'sh', '-c', 'set -eu; mkdir -p /tmp/fmu-executor-source; git -c safe.directory=/fmu-executor-source -c core.autocrlf=false -C /fmu-executor-source archive --format=tar "$FMU_EXECUTOR_COMMIT" > /tmp/fmu-executor-source.tar; tar -xf /tmp/fmu-executor-source.tar -C /tmp/fmu-executor-source; FMU_EXECUTOR_SOURCE=/tmp/fmu-executor-source go test -race -cover ./...'
 )
 
 & $docker.Source @dockerArguments

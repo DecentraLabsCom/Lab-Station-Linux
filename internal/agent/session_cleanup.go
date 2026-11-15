@@ -10,6 +10,9 @@ import (
 )
 
 func (a *Agent) cleanFMUExecutorState(ctx context.Context) error {
+	if a.cleanFMUExecutorStateOverride != nil {
+		return a.cleanFMUExecutorStateOverride(ctx)
+	}
 	if !fileExists("/opt/decentralabs/fmu-executor/app/main.py") {
 		return nil
 	}

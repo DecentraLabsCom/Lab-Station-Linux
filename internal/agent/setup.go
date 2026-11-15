@@ -278,14 +278,14 @@ func installDependencies(profile string, withFMU, withCloseCoordinates bool) err
 		switch manager {
 		case "apt":
 			if name == "debian" || name == "ubuntu" {
-				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "xauth", "openbox", "wmctrl")
+				packages = append(packages, "xrdp", "xorgxrdp", "xserver-xorg-core", "xauth", "openbox", "wmctrl", "zenity")
 			}
 		case "dnf", "yum":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "xorg-x11-xauth", "openbox", "wmctrl")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server-Xorg", "xorg-x11-xauth", "openbox", "wmctrl", "zenity")
 		case "zypper":
-			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "xauth", "openbox", "wmctrl")
+			packages = append(packages, "xrdp", "xorgxrdp", "xorg-x11-server", "xauth", "openbox", "wmctrl", "zenity")
 		case "pacman":
-			packages = append(packages, "xrdp", "xorg-server", "xorg-xauth", "openbox", "wmctrl")
+			packages = append(packages, "xrdp", "xorg-server", "xorg-xauth", "openbox", "wmctrl", "zenity")
 		}
 		if withCloseCoordinates {
 			packages = append(packages, "xdotool")

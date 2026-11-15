@@ -87,7 +87,7 @@ func main() {
 	if len(os.Args) > 2 {
 		args = os.Args[2:]
 	}
-	result := instance.Execute(context.Background(), "", command, args)
+	result := instance.ExecuteOperator(context.Background(), "", command, args)
 	if result.Stdout != "" {
 		fmt.Println(result.Stdout)
 	}

@@ -123,6 +123,7 @@
     },
     "summary": {
       "type": "object",
+      "description": "Readiness verdict for the profile's primary capability: readiness.physicalLab for dedicated or hybrid profiles, and readiness.fmu for fmu-only. Other capabilities remain independent.",
       "required": ["state", "ready", "issues"],
       "properties": {
         "state": { "enum": ["ready", "degraded", "unavailable", "unknown"] },
@@ -146,7 +147,10 @@
       "required": ["active", "localSessionActive"],
       "properties": {
         "active": { "type": "array", "items": { "$ref": "#/$defs/session" } },
-        "localSessionActive": { "type": "boolean" },
+        "localSessionActive": {
+          "type": "boolean",
+          "description": "True when any interactive physical-console or seat session exists, regardless of account; excludes remote RDP/Tiny Desk sessions."
+        },
         "remoteSessionActive": { "type": "boolean" },
         "queryOk": { "type": "boolean" }
       },

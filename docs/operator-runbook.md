@@ -148,25 +148,37 @@ create data in the protected, root-owned `labuser` home. Prefer a compatible
 non-Snap browser for this setup and verify it in an actual RDP session.
 
 An authorized provider may use the provider-managed RDP connection to start
-Tiny Desk outside a reservation or demo. This operator path does not require an
-active lease. End-user access still follows Gateway's authorized reservation or
-demo flow; leases govern reservation-bound `prepare-session` and
-`release-session`. The Lab Manager operator Release action is available only
-when no lease is active and closes managed Tiny Desk X11 sessions before
-cleaning up station state. logind may report the seatless `labuser` XRDP session
-as `Remote=no`; Lab Station still recognizes it as Tiny Desk. Seat-bound
-sessions remain under the local-session safety policy. Both paths use `labuser`,
-so disconnect provider maintenance sessions before a reservation begins. Keep
-the direct Guacamole connection and RDP network path restricted to trusted
-operators; the station does not enforce a lease at application launch.
+Tiny Desk outside a reservation or demo; application launch itself does not
+require a lease. Direct operator Prepare and Release, including `labstationctl`
+and dispatcher v1, are serialized against the station lease journal and refuse
+while a reservation or demo lease is active. Reservation-bound lifecycle
+commands must carry their matching lease context. The Lab Manager operator
+Release action follows the same no-active-lease rule, closes managed Tiny Desk
+X11 sessions, then restarts an installed FMU Executor to terminate all its
+sessions and clear temporary state. It preserves the instructor's console login,
+but this service-wide FMU cleanup can interrupt work from that session. FMU
+cleanup failure makes Release fail. logind may report the seatless
+`labuser` XRDP session as `Remote=no`; Lab Station still recognizes it as Tiny
+Desk. Seat-bound sessions remain under the local-session safety policy. Both
+paths use `labuser`, so disconnect provider maintenance sessions before a
+reservation begins. Keep the direct Guacamole connection and RDP network path
+restricted to trusted operators; the station does not enforce a lease at
+application launch.
+
+The local lease-expiry watchdog retries Release only after a completed failure
+explicitly marked `retryable`, which is limited to failures before session or
+FMU cleanup begins; every retry uses a fresh operation ID. A partial cleanup
+failure or an interrupted operation with an unknown outcome leaves the lease
+`recovery-required` and requires operator reconciliation rather than another
+automatic cleanup pass.
 
 Reservation preparation clears Tiny Desk work files and FMU temporary state
 through bounded helper processes running as the account that owns each data
 directory. The systemd service grants those helpers access to the managed
 workspace paths inside its filesystem sandbox. If the prepare deadline expires
 during cleanup, the operation returns `STATION_OPERATION_CANCELLED` and its
-lease cannot become active. Other cleanup errors remain visible as preparation
-warnings.
+lease cannot become active. Incomplete FMU or workspace cleanup returns a hard
+Prepare failure and leaves the lease `recovery-required`.
 
 On systemd hosts, privileged control operations run through the separate
 `decentralabs-labstation-helper.service`. Its Unix socket accepts requests only
@@ -307,20 +319,47 @@ exclusive instructor use and expires after eight hours by default. `clear`
 remains available on any profile to remove a stale flag. `Prepare` and `Release` are supported only for
 `dedicated` and `hybrid` physical stations. Prepare rejects local mode and an
 unexpected local console session on a dedicated station. On hybrid, the default
-policy warns and evicts an eligible local session after the 90-second Gateway
-grace period (minimum 30 seconds). Set
+policy requires each eligible local desktop session to confirm its graphical
+prompt before Prepare can evict it. The 90-second Gateway grace deadline
+(minimum 30 seconds) starts when the first prompt appears; time spent confirming
+counts against it, and any remaining time allows voluntary sign-out. Setup
+installs `zenity` for this prompt; with `--no-install-deps`, install `zenity`
+manually. If a prompt is declined, times out, or cannot be displayed while its
+session remains active, Prepare fails before any session is closed or cleanup
+runs. A session that signs out during its prompt is already released. Set
 `station.allow_local_session_eviction = false` to make Prepare fail safely
 without terminating an instructor session; Windows uses the equivalent
 `AllowLocalSessionEviction=false` entry in `labstation/data/station-profile.ini`.
-`--no-guard` skips notification and grace but still evicts immediately when the
-policy allows it. Release closes only the managed remote `labuser` session and
-is rejected while a reservation or demo lease is active.
+`--no-guard` is an explicit administrative bypass that skips confirmation and
+the grace period but still evicts immediately when policy allows. `--guard-notify=false`
+does not bypass the acknowledgement requirement. Release closes only the
+managed remote `labuser` session, preserves the instructor's console login,
+then restarts an installed FMU Executor and clears temporary data. This
+service-wide cleanup can interrupt an instructor's FMU work. Release is
+rejected while a reservation or demo lease is active. Manual/no-lease Prepare
+also refuses with `STATION_REMOTE_SESSION_ACTIVE` while a remote
+`labuser` Tiny Desk session is present. The response explains that it would
+clear LABUSER temporary files, Downloads, and lab scratch data and may interrupt
+open apps; use Release or log off before retrying. The Station checks again
+immediately before cleanup, while reservation-bound Prepare keeps its lease
+flow.
 
 Before each physical reservation, Prepare clears Tiny Desk `tmp`, cache,
 Downloads, `Documents/LabStationScratch`, the XDG trash and recent-file list.
 It restarts an installed FMU Executor to close its sessions and clears its
 temporary work directory. It preserves desktop/application configuration and
-FMU models. A cleanup problem is reported as an operational warning.
+FMU models. Prepare records each local session's affirmative acknowledgement
+before eviction; a successful send alone is not treated as acknowledgement. If
+a session declines, does not respond, or has no usable graphical prompt while
+the session remains active, Prepare leaves it open and fails before cleanup or
+lease activation. A session that signs out during its prompt is treated as
+already released. Any remaining grace interval after confirmation allows
+voluntary sign-out.
+Incomplete workspace or FMU cleanup is a failed Prepare (exit code 2) and
+leaves the lease `recovery-required` until an operator reconciles the station.
+An instructor who signs out during the grace interval is treated as already
+released; new or changed sessions cause Prepare to refuse before terminating
+any session.
 
 Before changing energy or reboot state, inspect the report and make sure no
 active user or FMU work would be interrupted:

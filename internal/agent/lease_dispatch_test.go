@@ -249,7 +249,7 @@ func TestKnownPrepareRefusalDoesNotPoisonLeaseOrOperationID(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.StateDir = t.TempDir()
 	runtime := &fakeRuntime{sessionsOK: true}
-	a, _ := newTestAgent(t, "dedicated", runtime)
+	a, _ := newTestAgent(t, "hybrid", runtime)
 	a.Config = cfg
 	localModePath := filepath.Join(cfg.StateDir, "local-mode.flag")
 	if err := os.WriteFile(localModePath, []byte("enabled"), 0o600); err != nil {

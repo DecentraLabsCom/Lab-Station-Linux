@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-11-16
+## [0.6.0] - 2026-11-17
 
 ### Changed
 - Apply profile-specific Prepare handoffs: Hybrid requires confirmation for
@@ -16,6 +16,9 @@
 - Reconcile `recovery-required` leases with fresh lease-bound Release attempts,
   preserve protected interactive sessions, and keep admission closed until
   cleanup succeeds.
+- Keep remote `labuser` sessions protected when their reservation association
+  cannot be established; a missing Station lease alone does not authorize
+  disconnect-driven cleanup.
 
 ## [0.5.0] - 2026-11-15
 

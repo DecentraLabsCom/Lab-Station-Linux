@@ -700,18 +700,6 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 		a.log("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "expired lease identity is incomplete or invalid"})
 		return nil
 	}
-	if safe, reason := a.safeForExpiredLeaseRelease(); !safe {
-		active.NextReconcileAt = now.Add(leaseReconciliationRetryInterval).Format(time.RFC3339Nano)
-		active.UpdatedAt = now.Format(time.RFC3339Nano)
-		state.Active = &active
-		if err := saveLeaseState(a.Config.StateDir, state); err != nil {
-			unlockState(lock)
-			return err
-		}
-		unlockState(lock)
-		a.log("lease-reconciliation-deferred", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": reason})
-		return nil
-	}
 	if reconciliationAttempt {
 		active.NextReconcileAt = now.Add(leaseReconciliationRetryInterval).Format(time.RFC3339Nano)
 		active.UpdatedAt = now.Format(time.RFC3339Nano)
@@ -794,20 +782,6 @@ func validStoredLease(active leaseRecord) bool {
 	notBefore, notBeforeErr := parseUTC(active.NotBefore)
 	expiresAt, expiresErr := parseUTC(active.ExpiresAt)
 	return notBeforeErr == nil && expiresErr == nil && expiresAt.After(notBefore)
-}
-
-func (a *Agent) safeForExpiredLeaseRelease() (bool, string) {
-	if a.Config.Profile == "fmu-only" {
-		return false, "profile does not support physical session Release"
-	}
-	if a.localModeEnabled() {
-		return false, "local mode is active"
-	}
-	local, remote, known := a.hostRuntime().Sessions()
-	if !known {
-		return false, "session inventory is unavailable"
-	}
-	return expiredLeaseSessionSafety(a.Config.Profile, local, remote)
 }
 
 func expiredLeaseSessionSafety(profile string, local, remote []map[string]any) (bool, string) {
@@ -948,91 +922,4 @@ func operationNeedsReconciliation(operation leaseOperation) bool {
 		return true
 	}
 	return operation.Result.Metadata["code"] == "STATION_OPERATION_RECOVERY_REQUIRED"
-}
-
-const unreservedTinyDeskDisconnectGrace = 10 * time.Second
-
-func (a *Agent) enforceUnreservedTinyDeskDisconnect(ctx context.Context) error {
-	return a.enforceUnreservedTinyDeskDisconnectAt(ctx, time.Now().UTC(), unreservedTinyDeskDisconnectGrace)
-}
-
-func (a *Agent) enforceUnreservedTinyDeskDisconnectAt(ctx context.Context, now time.Time, grace time.Duration) error {
-	if ctx.Err() != nil || a.Config.Profile == "fmu-only" {
-		a.resetUnreservedDisconnectTimer()
-		return nil
-	}
-	lock, err := lockLeaseJournal(a.Config.StateDir)
-	if err != nil {
-		a.resetUnreservedDisconnectTimer()
-		return err
-	}
-	state, err := loadLeaseState(a.Config.StateDir)
-	if err != nil {
-		unlockState(lock)
-		a.resetUnreservedDisconnectTimer()
-		return err
-	}
-	if state.Active != nil {
-		unlockState(lock)
-		a.resetUnreservedDisconnectTimer()
-		return nil
-	}
-	unlockState(lock)
-
-	_, remote, sessionsKnown := a.hostRuntime().Sessions()
-	if !sessionsKnown || !hasSeatlessTinyDeskSession(remote) {
-		a.resetUnreservedDisconnectTimer()
-		return nil
-	}
-	connected, connectionStateKnown := a.hostRuntime().RDPClientsConnected()
-	if !connectionStateKnown || connected {
-		a.resetUnreservedDisconnectTimer()
-		return nil
-	}
-
-	a.disconnectMu.Lock()
-	if a.disconnectedSince.IsZero() {
-		a.disconnectedSince = now
-		a.disconnectMu.Unlock()
-		return nil
-	}
-	disconnectedSince := a.disconnectedSince
-	a.disconnectMu.Unlock()
-	if now.Before(disconnectedSince) || now.Sub(disconnectedSince) < grace {
-		return nil
-	}
-
-	result := a.executeOperatorRelease(ctx, Request{ID: newID(), Operation: "execute", Command: "release-session", Args: []string{"--require-rdp-disconnected"}})
-	if result.ExitCode >= 2 {
-		a.resetUnreservedDisconnectTimer()
-		if result.Metadata["code"] == "STATION_LEASE_CONFLICT" || result.Metadata["code"] == "STATION_RDP_CLIENT_CONNECTED" || result.Metadata["code"] == "STATION_RDP_CLIENT_STATE_UNKNOWN" {
-			return nil
-		}
-		return fmt.Errorf("automatic Tiny Desk release failed: %s", result.Message)
-	}
-	a.resetUnreservedDisconnectTimer()
-	a.appendEvent(map[string]any{"kind": "unreserved-tinydesk-disconnect-cleanup", "timestamp": now.Format(time.RFC3339Nano), "sessionId": firstSeatlessTinyDeskSessionID(remote)})
-	return nil
-}
-
-func hasSeatlessTinyDeskSession(sessions []map[string]any) bool {
-	return firstSeatlessTinyDeskSessionID(sessions) != ""
-}
-
-func firstSeatlessTinyDeskSessionID(sessions []map[string]any) string {
-	for _, session := range sessions {
-		if session["user"] != "labuser" || session["type"] != "x11" || session["seat"] != "" {
-			continue
-		}
-		if id, ok := session["id"].(string); ok && id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-func (a *Agent) resetUnreservedDisconnectTimer() {
-	a.disconnectMu.Lock()
-	a.disconnectedSince = time.Time{}
-	a.disconnectMu.Unlock()
 }

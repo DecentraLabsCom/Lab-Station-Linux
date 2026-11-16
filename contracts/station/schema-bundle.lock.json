@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "DecentraLabsCom/Lab-Gateway",
-  "commit": "1942c199886e0aa0a8aa84f2f7cb851ca3dbe822",
+  "commit": "33e440877d0d0cf5f7da3e1efe3978af03071af2",
   "files": [
     {
       "source": "contracts/station/README.md",
@@ -96,7 +96,7 @@
     {
       "source": "docs/station-test-parity.json",
       "target": "v3/test-parity.json",
-      "sha256": "77302d3bd962e14ff42f91bd64798b7b8b719ef77439643af08e95ca178b7873"
+      "sha256": "345c99fe7193e59c4cc897708d0e64543682739e8d8ee92feafe6a1301cf9ed1"
     }
   ]
 }

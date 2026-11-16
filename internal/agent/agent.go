@@ -34,8 +34,6 @@ type Agent struct {
 	rebootMarker                  func() bool
 	secretProbe                   func() bool
 	mu                            sync.Mutex
-	disconnectMu                  sync.Mutex
-	disconnectedSince             time.Time
 }
 
 type Result struct {
@@ -716,7 +714,16 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	} else {
 		currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
 		currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
-		if !currentOK || !authorized || len(currentLocal) != 0 || len(currentRemoteTargets) != 0 || a.localModeEnabled() {
+		if !currentOK {
+			return 2, "", "station state changed while preparing", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
+		}
+		if !authorized || len(currentRemoteTargets) > 0 {
+			if manualMaintenance {
+				return manualPrepareRemoteSessionRefusal()
+			}
+			return remoteLabUserPrepareRefusal()
+		}
+		if len(currentLocal) != 0 || a.localModeEnabled() {
 			return 2, "", "station state changed while preparing", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
 		}
 	}

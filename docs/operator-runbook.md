@@ -153,11 +153,14 @@ require a lease. Direct operator Prepare and Release, including `labstationctl`
 and dispatcher v1, are serialized against the station lease journal and refuse
 while a reservation or demo lease is active. Reservation-bound lifecycle
 commands must carry their matching lease context. The Lab Manager operator
-Release action follows the same no-active-lease rule, closes managed Tiny Desk
-X11 sessions, then restarts an installed FMU Executor to terminate all its
-sessions and clear temporary state. It preserves the local console session,
-but this service-wide FMU cleanup can interrupt work from that session. FMU
-cleanup failure makes Release fail. logind may report the seatless
+Release action follows the same no-active-lease rule. It is also refused while
+any remote `labuser` session exists, even without a Station lease, because the
+Station cannot prove that session is unreserved; the refusal runs no FMU
+cleanup. A matching reservation-bound Release closes its managed Tiny Desk X11
+session, then restarts an installed FMU Executor to terminate all its sessions
+and clear temporary state. It preserves the local console session, but this
+service-wide FMU cleanup can interrupt work from that session. FMU cleanup
+failure makes Release fail. logind may report the seatless
 `labuser` XRDP session as `Remote=no`; Lab Station still recognizes it as Tiny
 Desk. Seat-bound sessions remain under the local-session safety policy. Both
 paths use `labuser`, so disconnect provider maintenance sessions before a
@@ -223,14 +226,14 @@ helper revalidates the XRDP session and uses logind's session termination as
 the final fallback. This behavior applies to managed XRDP/Xorg Tiny Desk
 sessions, not Wayland desktops.
 
-Closing the browser or Guacamole tunnel does not release the XRDP session
-immediately. If no reservation or demo lease is active, the daemon releases the
-managed Tiny Desk session after its RDP client has remained disconnected for
-10 seconds. Reconnecting during that grace period resets the timer. The watchdog
-fails closed if it cannot verify the RDP connection or session state. With an
-active reservation or demo lease, this automatic cleanup is suspended so the
-user can reconnect while authorized; the controlled application close runs
-when the lease is released or expires.
+Closing the browser or Guacamole tunnel does not release the XRDP session.
+Without a matching lease or Gateway proof that the exact session is unreserved,
+the daemon leaves a remote `labuser` session open because it may belong to an
+active reservation whose lease has not reached the Station. Reconnecting stays
+possible. Gateway-authorized Prepare can hand off only the session IDs covered
+by its reservation check; otherwise an operator must confirm that no reservation
+is active before ending the OS session. A matching reservation Release or the
+lease-expiry reconciler ends the managed session.
 
 ### Configure Guacamole for Linux XRDP
 

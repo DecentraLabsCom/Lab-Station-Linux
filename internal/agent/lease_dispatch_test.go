@@ -29,6 +29,34 @@ func dispatchTestRequest(t *testing.T, a *Agent, raw string) Result {
 	return decodeResult(t, output.Bytes())
 }
 
+func makeLeaseReconciliationDue(t *testing.T, stateDir, leaseID string, generation uint64) {
+	t.Helper()
+	lock, err := lockLeaseJournal(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockState(lock)
+	state, err := loadLeaseState(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active == nil || state.Active.LeaseID != leaseID || state.Active.Generation != generation {
+		t.Fatalf("cannot advance reconciliation time for lease %q generation %d: %#v", leaseID, generation, state.Active)
+	}
+	stale := time.Now().UTC().Add(-2 * leaseReconciliationRetryInterval).Format(time.RFC3339Nano)
+	state.Active.NextReconcileAt = stale
+	state.Active.UpdatedAt = stale
+	for id, operation := range state.Operations {
+		if operation.LeaseID == leaseID && operation.Generation == generation {
+			operation.UpdatedAt = stale
+			state.Operations[id] = operation
+		}
+	}
+	if err := saveLeaseState(stateDir, state); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDispatchV2RejectsExpiredOrMissingLeaseContextBeforeEffects(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.StateDir = t.TempDir()
@@ -82,6 +110,20 @@ func TestOperatorSessionCommandsRefuseActiveLease(t *testing.T) {
 	}
 	if state.Active == nil || state.Active.LeaseID != active.LeaseID || state.Active.State != "active" {
 		t.Fatalf("operator refusal changed reservation lease state: %#v", state.Active)
+	}
+}
+
+func TestAdministrativeReleaseProtectsRemoteLabUserWithoutLease(t *testing.T) {
+	runtime := &fakeRuntime{
+		remote:     []map[string]any{{"id": "rdp-unassociated", "user": "labuser", "type": "x11", "seat": ""}},
+		sessionsOK: true,
+	}
+	a, calls := newTestAgent(t, "dedicated", runtime)
+
+	result := a.ExecuteOperator(context.Background(), "operator-release-unassociated", "release-session", nil)
+
+	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_REMOTE_SESSION_ACTIVE" || len(*calls) != 0 {
+		t.Fatalf("administrative Release must protect a remote LABUSER session without reservation evidence: %#v helper=%#v", result, *calls)
 	}
 }
 
@@ -420,6 +462,7 @@ func TestLeaseExpiryRetriesOnlyKnownPreEffectFailures(t *testing.T) {
 	}
 
 	runtime.sessionsOK = true
+	makeLeaseReconciliationDue(t, a.Config.StateDir, active.LeaseID, active.Generation)
 	if err := a.enforceLeaseExpiry(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -500,14 +543,22 @@ func TestLeaseExpiryDoesNotReplayInterruptedCleanup(t *testing.T) {
 	}
 }
 
-func TestLeaseExpiryRequiresReconciliationForUnclassifiedRecoveryState(t *testing.T) {
+func TestLeaseExpiryAutomaticallyReconcilesUnclassifiedRecoveryState(t *testing.T) {
 	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11"}}}
 	a, calls := newTestAgent(t, "dedicated", runtime)
+	a.runHelper = func(_ context.Context, raw []byte) error {
+		var request map[string]any
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return err
+		}
+		*calls = append(*calls, request)
+		return fmt.Errorf("session termination outcome requires reconciliation")
+	}
 	now := time.Now().UTC()
 	active := leaseRecord{
 		LeaseID: "lease-expiry-unclassified", LabID: "lab-unclassified", ReservationKey: "reservation-unclassified", Kind: "reservation",
 		Generation: 11, State: "recovery-required", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano),
-		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Add(-2 * leaseReconciliationRetryInterval).Format(time.RFC3339Nano),
 	}
 	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 11, Active: &active, Operations: map[string]leaseOperation{}}); err != nil {
 		t.Fatal(err)
@@ -522,9 +573,9 @@ func TestLeaseExpiryRequiresReconciliationForUnclassifiedRecoveryState(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker, found := state.Operations["lease-expiry-recovery-11"]
-	if len(*calls) != 0 || state.Active == nil || state.Active.State != "recovery-required" || !found || marker.State != "recovery-required" {
-		t.Fatalf("a recovery lease without a persisted retryable Release result must remain blocked: active=%#v marker=%#v helper=%#v", state.Active, marker, *calls)
+	marker, found := state.Operations["lease-expiry-11"]
+	if len(*calls) != 1 || state.Active == nil || state.Active.State != "recovery-required" || !found || marker.State != "completed" || marker.Result == nil || marker.Result.Metadata["retryable"] == true || state.Active.NextReconcileAt == "" {
+		t.Fatalf("a recovery lease must attempt a fresh guarded Release and remain blocked after an uncertain effect: active=%#v marker=%#v helper=%#v", state.Active, marker, *calls)
 	}
 }
 
@@ -535,12 +586,12 @@ func TestLeaseExpiryRetriesRecordedPreEffectReleaseFailure(t *testing.T) {
 	active := leaseRecord{
 		LeaseID: "lease-expiry-recorded-retry", LabID: "lab-recorded-retry", ReservationKey: "reservation-recorded-retry", Kind: "reservation",
 		Generation: 12, State: "recovery-required", NotBefore: now.Add(-time.Hour).Format(time.RFC3339Nano),
-		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano),
+		ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano), UpdatedAt: now.Add(-2 * leaseReconciliationRetryInterval).Format(time.RFC3339Nano),
 	}
 	retryableResult := Result{ID: "gateway-release-12", Command: "release-session", ExitCode: 2, Outcome: "failure",
 		Message: "session inventory unavailable", Metadata: map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}}
 	operations := map[string]leaseOperation{
-		"gateway-release-12": {State: "completed", Command: "release-session", LeaseID: active.LeaseID, Generation: active.Generation, UpdatedAt: now.Format(time.RFC3339Nano), Result: &retryableResult},
+		"gateway-release-12": {State: "completed", Command: "release-session", LeaseID: active.LeaseID, Generation: active.Generation, UpdatedAt: now.Add(-2 * leaseReconciliationRetryInterval).Format(time.RFC3339Nano), Result: &retryableResult},
 	}
 	if err := saveLeaseState(a.Config.StateDir, leaseState{NextGeneration: 12, Active: &active, Operations: operations}); err != nil {
 		t.Fatal(err)
@@ -558,159 +609,6 @@ func TestLeaseExpiryRetriesRecordedPreEffectReleaseFailure(t *testing.T) {
 	}
 	if _, found := state.Operations["lease-expiry-12"]; !found {
 		t.Fatalf("expiry retry did not record its fresh operation id: %#v", state.Operations)
-	}
-}
-
-func TestUnreservedTinyDeskDisconnectReleasesAfterGrace(t *testing.T) {
-	runtime := &fakeRuntime{
-		remote:        []map[string]any{{"id": "rdp-unreserved", "user": "labuser", "remote": false, "seat": "", "type": "x11"}},
-		sessionsOK:    true,
-		rdpStateKnown: true,
-	}
-	a, calls := newTestAgent(t, "dedicated", runtime)
-	grace := unreservedTinyDeskDisconnectGrace
-	if grace != 10*time.Second {
-		t.Fatalf("unreserved Tiny Desk disconnect grace = %s, want ten seconds", grace)
-	}
-	start := time.Now().UTC()
-
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, grace); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(grace-time.Second), grace); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("Tiny Desk was released before the disconnect grace elapsed: %#v", *calls)
-	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(grace), grace); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 1 || (*calls)[0]["sessionId"] != "rdp-unreserved" {
-		t.Fatalf("disconnected unreserved Tiny Desk session was not released once: %#v", *calls)
-	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(grace+time.Second), grace); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 1 {
-		t.Fatalf("released Tiny Desk session was terminated more than once: %#v", *calls)
-	}
-}
-
-func TestUnreservedTinyDeskDisconnectIsDeferredByReservationLease(t *testing.T) {
-	runtime := &fakeRuntime{
-		remote:        []map[string]any{{"id": "rdp-reserved", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
-		sessionsOK:    true,
-		rdpStateKnown: true,
-	}
-	a, calls := newTestAgent(t, "dedicated", runtime)
-	start := time.Now().UTC()
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	lease := &leaseRecord{LeaseID: "reservation-active", Kind: "reservation", Generation: 1, State: "active", NotBefore: start.Format(time.RFC3339Nano), ExpiresAt: start.Add(time.Hour).Format(time.RFC3339Nano)}
-	if err := saveLeaseState(a.Config.StateDir, leaseState{Active: lease, Operations: map[string]leaseOperation{}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(2*time.Minute), time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("active reservation session was terminated on disconnect: %#v", *calls)
-	}
-	state, err := loadLeaseState(a.Config.StateDir)
-	if err != nil || state.Active == nil || state.Active.LeaseID != lease.LeaseID {
-		t.Fatalf("reserved lease was modified: state=%#v err=%v", state, err)
-	}
-}
-
-func TestUnreservedTinyDeskDisconnectTimerResetsWhenClientReconnects(t *testing.T) {
-	runtime := &fakeRuntime{
-		remote:        []map[string]any{{"id": "rdp-reconnect", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
-		sessionsOK:    true,
-		rdpStateKnown: true,
-	}
-	a, calls := newTestAgent(t, "dedicated", runtime)
-	start := time.Now().UTC()
-	grace := unreservedTinyDeskDisconnectGrace
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, grace); err != nil {
-		t.Fatal(err)
-	}
-	runtime.rdpConnected = true
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(5*time.Second), grace); err != nil {
-		t.Fatal(err)
-	}
-	runtime.rdpConnected = false
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(20*time.Second), grace); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(29*time.Second), grace); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("reconnected Tiny Desk session was released before a full new grace period: %#v", *calls)
-	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(30*time.Second), grace); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 1 {
-		t.Fatalf("Tiny Desk session was not released after a full disconnected grace period: %#v", *calls)
-	}
-}
-
-func TestUnreservedTinyDeskDisconnectRequiresKnownIdleSessionAndRDPState(t *testing.T) {
-	for _, test := range []struct {
-		name          string
-		connected     bool
-		stateKnown    bool
-		sessionsKnown bool
-	}{
-		{name: "connected client", connected: true, stateKnown: true, sessionsKnown: true},
-		{name: "unknown RDP socket state", stateKnown: false, sessionsKnown: true},
-		{name: "unknown session inventory", stateKnown: true, sessionsKnown: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			runtime := &fakeRuntime{
-				remote:        []map[string]any{{"id": "rdp-1", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
-				sessionsOK:    test.sessionsKnown,
-				rdpConnected:  test.connected,
-				rdpStateKnown: test.stateKnown,
-			}
-			a, calls := newTestAgent(t, "dedicated", runtime)
-			start := time.Now().UTC()
-			if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, time.Second); err != nil {
-				t.Fatal(err)
-			}
-			if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(time.Hour), time.Second); err != nil {
-				t.Fatal(err)
-			}
-			if len(*calls) != 0 {
-				t.Fatalf("connected or uncertain RDP state triggered Release: %#v", *calls)
-			}
-		})
-	}
-}
-
-func TestUnreservedTinyDeskReleaseRechecksForRDPReconnectBeforeTermination(t *testing.T) {
-	checks := 0
-	runtime := &fakeRuntime{
-		remote:     []map[string]any{{"id": "rdp-reconnected", "user": "labuser", "remote": true, "seat": "", "type": "x11"}},
-		sessionsOK: true,
-		rdpState: func() (bool, bool) {
-			checks++
-			return checks >= 3, true
-		},
-	}
-	a, calls := newTestAgent(t, "dedicated", runtime)
-	start := time.Now().UTC()
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.enforceUnreservedTinyDeskDisconnectAt(context.Background(), start.Add(time.Minute), time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("reconnected RDP session was terminated during automatic release: %#v", *calls)
 	}
 }
 

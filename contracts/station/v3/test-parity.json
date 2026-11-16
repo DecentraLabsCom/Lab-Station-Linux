@@ -43,11 +43,11 @@
   },
   "sessionSafety": {
     "unavailableInventory": "fail-closed",
-    "localSession": "protect-unless-authorized",
-    "localEvictionAcknowledgement": "required",
+    "localSession": "profile-specific",
+    "localEvictionAcknowledgement": "required-for-hybrid-only",
     "prepareDecision": {
       "noLocalSession": "continue",
-      "dedicatedLocalSession": "refuse",
+      "dedicatedLocalSession": "notify-evict",
       "hybridLocalSessionWithoutAuthorization": "refuse",
       "hybridLocalSessionWithAuthorization": "evict"
     }
@@ -114,7 +114,7 @@
       }
     },
     {
-      "id": "sessions.protect-local-user-unless-authorized",
+      "id": "sessions.prepare-profile-specific-handoff",
       "windows": {
         "file": "labstation/tests/ReservationFlowTests.ahk",
         "test": "TestPrepareLocalSessionPolicyMatchesSharedMatrix"

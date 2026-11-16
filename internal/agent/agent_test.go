@@ -54,9 +54,6 @@ type fakeRuntime struct {
 	confirmations        []string
 	notifyStarted        chan struct{}
 	notifyRelease        <-chan struct{}
-	rdpConnected         bool
-	rdpStateKnown        bool
-	rdpState             func() (bool, bool)
 }
 
 func (f *fakeRuntime) Supervisor() host.Supervisor            { return f.supervisor }
@@ -84,10 +81,7 @@ func (f *fakeRuntime) Sessions() ([]map[string]any, []map[string]any, bool) {
 	return append([]map[string]any(nil), f.local...), append([]map[string]any(nil), remote...), f.sessionsOK
 }
 func (f *fakeRuntime) RDPClientsConnected() (bool, bool) {
-	if f.rdpState != nil {
-		return f.rdpState()
-	}
-	return f.rdpConnected, f.rdpStateKnown
+	return false, false
 }
 func (f *fakeRuntime) WakeStatus([]map[string]string) (bool, bool) { return f.wakeOK, f.wakeOn }
 func (f *fakeRuntime) WakePersistent([]map[string]string) bool     { return f.wakeSaved }
@@ -400,7 +394,7 @@ func TestPrepareLocalSessionPolicyMatchesSharedMatrix(t *testing.T) {
 		allowEviction           bool
 	}{
 		{name: "no-local-session", profile: "hybrid", expected: policy["noLocalSession"]},
-		{name: "dedicated-protects-local-user", profile: "dedicated", count: 1, expected: policy["dedicatedLocalSession"]},
+		{name: "dedicated-warns-and-evicts-local-user", profile: "dedicated", count: 1, expected: policy["dedicatedLocalSession"]},
 		{name: "hybrid-protects-unless-authorized", profile: "hybrid", count: 1, expected: policy["hybridLocalSessionWithoutAuthorization"]},
 		{name: "hybrid-evicts-after-authorization", profile: "hybrid", count: 1, allowEviction: true, expected: policy["hybridLocalSessionWithAuthorization"]},
 	}
@@ -413,35 +407,32 @@ func TestPrepareLocalSessionPolicyMatchesSharedMatrix(t *testing.T) {
 	}
 }
 
-func TestPrepareSessionRefusesUnsafeProfilesAndReleasesHybridSessions(t *testing.T) {
+func TestPrepareUsesDedicatedHandoffAndHybridAuthorizationPolicies(t *testing.T) {
 	matrix := loadPortableParityMatrix(t)
-	if matrix.SessionSafety.LocalSession != "protect-unless-authorized" {
+	if matrix.SessionSafety.LocalSession != "profile-specific" {
 		t.Fatalf("shared local-session policy = %q", matrix.SessionSafety.LocalSession)
 	}
 	instructor := map[string]any{"id": "local-1", "user": "instructor", "kind": "local"}
-	runtime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, local: []map[string]any{instructor}, sessionsOK: true}
-	a, calls := newTestAgent(t, "dedicated", runtime)
-	result := a.Execute(context.Background(), "prepare-1", "prepare-session", nil)
-	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_LOCAL_SESSION_ACTIVE" || len(*calls) != 0 {
-		t.Fatalf("dedicated station should fail closed on an active local user: %#v, helper=%#v", result, *calls)
+	dedicatedRuntime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, local: []map[string]any{instructor}, sessionsOK: true}
+	dedicated, calls := newTestAgent(t, "dedicated", dedicatedRuntime)
+	var graceSeconds int
+	dedicated.waitGraceFn = func(_ context.Context, seconds int) error { graceSeconds = seconds; return nil }
+	result := dedicated.Execute(context.Background(), "prepare-dedicated", "prepare-session", nil)
+	if result.ExitCode != 0 || result.Metadata["releasedSessions"] != 1 || graceSeconds != 30 || len(dedicatedRuntime.notices) != 1 || len(dedicatedRuntime.confirmations) != 0 || len(*calls) != 1 || (*calls)[0]["operation"] != "terminate-session" {
+		t.Fatalf("dedicated Prepare must notify, wait, and hand off without a prompt: result=%#v grace=%d notices=%#v confirmations=%#v helper=%#v", result, graceSeconds, dedicatedRuntime.notices, dedicatedRuntime.confirmations, *calls)
 	}
 
-	a.Config.Profile = "hybrid"
-	a.Config.AllowLocalSessionEviction = false
-	result = a.Execute(context.Background(), "prepare-2", "prepare-session", nil)
+	hybridRuntime := &fakeRuntime{supervisor: fakeSupervisor{name: "systemd"}, local: []map[string]any{instructor}, sessionsOK: true}
+	hybrid, _ := newTestAgent(t, "hybrid", hybridRuntime)
+	hybrid.Config.AllowLocalSessionEviction = false
+	result = hybrid.Execute(context.Background(), "prepare-hybrid", "prepare-session", nil)
 	if result.ExitCode != 2 || result.Metadata["code"] != "STATION_LOCAL_SESSION_ACTIVE" {
 		t.Fatalf("hybrid station should protect instructor session unless eviction was opted in: %#v", result)
-	}
-
-	a.Config.AllowLocalSessionEviction = true
-	result = a.Execute(context.Background(), "prepare-3", "prepare-session", []string{"--no-guard"})
-	if result.ExitCode != 0 || len(*calls) != 1 || (*calls)[0]["operation"] != "terminate-session" || (*calls)[0]["sessionId"] != "local-1" {
-		t.Fatalf("authorized hybrid preparation should invoke the termination helper exactly once: result=%#v helper=%#v", result, *calls)
 	}
 }
 
 func TestPrepareRequiresLocalSessionAcknowledgementBeforeEviction(t *testing.T) {
-	if policy := loadPortableParityMatrix(t).SessionSafety.LocalEvictionAcknowledgement; policy != "required" {
+	if policy := loadPortableParityMatrix(t).SessionSafety.LocalEvictionAcknowledgement; policy != "required-for-hybrid-only" {
 		t.Fatalf("shared local-session acknowledgement policy = %q", policy)
 	}
 	teacher := map[string]any{"id": "seat-7", "user": "teacher", "remote": false, "seat": "seat0", "type": "wayland", "kind": "local"}
@@ -595,7 +586,7 @@ func TestManualPrepareRechecksRemoteLabUserBeforeCleanup(t *testing.T) {
 	}
 }
 
-func TestLeasePrepareDoesNotApplyManualRemoteSessionRefusal(t *testing.T) {
+func TestLeasePrepareRequiresGatewayAuthorizationForRemoteLabUserHandoff(t *testing.T) {
 	runtime := &fakeRuntime{
 		supervisor: fakeSupervisor{name: "systemd"},
 		remote: []map[string]any{{
@@ -608,12 +599,20 @@ func TestLeasePrepareDoesNotApplyManualRemoteSessionRefusal(t *testing.T) {
 		}},
 		sessionsOK: true,
 	}
-	a, _ := newTestAgent(t, "hybrid", runtime)
+	a, calls := newTestAgent(t, "dedicated", runtime)
+	var graceSeconds int
+	a.waitGraceFn = func(_ context.Context, seconds int) error { graceSeconds = seconds; return nil }
+	now := time.Now().UTC()
+	request := v2LeaseRequest("reservation-prepare", "prepare-session", "lease-prepare-remote", 0, now, now.Add(time.Minute), now.Add(time.Hour))
+	refused := dispatchTestRequest(t, a, request)
+	if refused.ExitCode != 2 || refused.Metadata["code"] != "STATION_REMOTE_SESSION_ACTIVE" || len(*calls) != 0 {
+		t.Fatalf("lease Prepare must fail closed without Gateway proof that the remote session is unreserved: %#v helper=%#v", refused, *calls)
+	}
 
-	result := a.Execute(context.Background(), "reservation-prepare", "prepare-session", nil)
-
-	if result.ExitCode >= 2 || result.Metadata["code"] == "STATION_REMOTE_SESSION_ACTIVE" {
-		t.Fatalf("reservation Prepare must keep its existing lifecycle: %#v", result)
+	authorized := strings.Replace(request, `"args":[]`, `"args":["--unreserved-remote-labuser-sessions=xrdp-session-1"]`, 1)
+	result := dispatchTestRequest(t, a, authorized)
+	if result.ExitCode != 0 || graceSeconds != 30 || len(runtime.notices) != 1 || len(runtime.confirmations) != 0 || len(*calls) != 1 || (*calls)[0]["operation"] != "terminate-session" || (*calls)[0]["sessionId"] != "xrdp-session-1" {
+		t.Fatalf("authorized Dedicated reservation Prepare must warn and hand off the exact unreserved session without a prompt: result=%#v grace=%d notices=%#v confirmations=%#v helper=%#v", result, graceSeconds, runtime.notices, runtime.confirmations, *calls)
 	}
 }
 

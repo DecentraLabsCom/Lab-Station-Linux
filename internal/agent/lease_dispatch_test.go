@@ -248,6 +248,7 @@ func TestCancelledPrepareCannotActivateReservationLease(t *testing.T) {
 func TestKnownPrepareRefusalDoesNotPoisonLeaseOrOperationID(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.StateDir = t.TempDir()
+	cfg.Profile = "hybrid"
 	runtime := &fakeRuntime{sessionsOK: true}
 	a, _ := newTestAgent(t, "hybrid", runtime)
 	a.Config = cfg

@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "DecentraLabsCom/Lab-Gateway",
-  "commit": "473c25cd9052354a925a5587f854f8bb4cbaa22e",
+  "commit": "1942c199886e0aa0a8aa84f2f7cb851ca3dbe822",
   "files": [
     {
       "source": "contracts/station/README.md",
       "target": "gateway-contracts/README.md",
-      "sha256": "d98d90be0203225990544be6fedec456b7fd9c89d0ed0740dd4fc3eb77299def"
+      "sha256": "a96212c5c5d726dfcb09d85b1106d5226d1e96e87b53b33ae02493fca0d3e0cd"
     },
     {
       "source": "contracts/station/dispatcher/fixtures/failure-v2-response.fixture.json",
@@ -91,7 +91,7 @@
     {
       "source": "contracts/station/v3/status.schema.json",
       "target": "gateway-contracts/v3/status.schema.json",
-      "sha256": "793af8e9b6eb1de1aea574175014f9b1479136f4e7b3c00770189d0cc4031819"
+      "sha256": "07d1e456c47e6942d78dfaad2faa52c94053f30cfe46b653851bfe57bffd6d40"
     },
     {
       "source": "docs/station-test-parity.json",

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-16
+
+### Changed
+- Apply profile-specific Prepare handoffs: Hybrid requires confirmation for
+  eligible local and Gateway-authorized remote `labuser` sessions; Dedicated
+  warns, waits through the grace period, and hands off without confirmation.
+- Authorize residual remote `labuser` handoffs from Gateway reservation
+  evidence and exact OS session IDs; protect active reservation leases from
+  unrelated actions.
+
+### Fixed
+- Reconcile `recovery-required` leases with fresh lease-bound Release attempts,
+  preserve protected interactive sessions, and keep admission closed until
+  cleanup succeeds.
+
 ## [0.5.0] - 2026-11-15
 
 ### Changed

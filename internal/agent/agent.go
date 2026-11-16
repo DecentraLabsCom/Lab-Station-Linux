@@ -182,9 +182,9 @@ func ValidateCommand(command string, args []string) error {
 	var validOption map[string]bool
 	switch command {
 	case "prepare-session":
-		validOption = map[string]bool{"--guard-grace": true, "--guard-message": true, "--guard-silent": true, "--guard-notify": true, "--no-guard": true, "--message": true, "--grace": true, "--silent": true, "--no-notify": true, "--reservation-key": true, "--operation-id": true}
+		validOption = map[string]bool{"--guard-grace": true, "--guard-message": true, "--guard-silent": true, "--guard-notify": true, "--no-guard": true, "--message": true, "--grace": true, "--silent": true, "--no-notify": true, "--reservation-key": true, "--operation-id": true, "--unreserved-remote-labuser-sessions": true}
 	case "release-session":
-		validOption = map[string]bool{"--reboot": true, "--reboot-timeout": true, "--reservation-key": true, "--operation-id": true, "--require-rdp-disconnected": true}
+		validOption = map[string]bool{"--reboot": true, "--reboot-timeout": true, "--reservation-key": true, "--operation-id": true, "--require-rdp-disconnected": true, "--protect-local-sessions": true}
 	case "session guard":
 		validOption = map[string]bool{"--guard-grace": true, "--guard-message": true, "--guard-silent": true, "--guard-notify": true, "--no-guard": true, "--user": true, "--message": true, "--grace": true, "--silent": true, "--no-notify": true, "--operation-id": true}
 	case "power":
@@ -253,6 +253,15 @@ func ValidateCommand(command string, args []string) error {
 				return errors.New("session guard user is invalid")
 			}
 		}
+		if command == "prepare-session" && key == "--unreserved-remote-labuser-sessions" {
+			_, value, hasValue := strings.Cut(arg, "=")
+			if !hasValue || len(value) > 240 {
+				return errors.New("remote LABUSER session authorization is invalid")
+			}
+			if _, err := parseRemoteSessionAuthorization(value); err != nil {
+				return err
+			}
+		}
 	}
 	switch command {
 	case "prepare-session", "release-session", "session guard":
@@ -308,18 +317,10 @@ func (a *Agent) Status() map[string]any {
 	if physicalAvailable && !sessionsOK {
 		physicalIssues = append(physicalIssues, "login session inventory is unavailable")
 	}
-	if physicalAvailable && len(localSessions) > 0 {
-		if a.Config.Profile == "dedicated" {
-			physicalIssues = append(physicalIssues, "local user session is active on a dedicated station")
-		}
-		if a.Config.Profile == "hybrid" && !a.Config.AllowLocalSessionEviction {
-			physicalIssues = append(physicalIssues, "local session is active and session eviction is disabled")
-		}
+	if physicalAvailable && a.Config.Profile == "hybrid" && len(localSessions) > 0 && !a.Config.AllowLocalSessionEviction {
+		physicalIssues = append(physicalIssues, "local session is active and session eviction is disabled")
 	}
 	physicalReady := physicalAvailable && remoteReady && sessionsOK
-	if a.Config.Profile == "dedicated" && len(localSessions) > 0 {
-		physicalReady = false
-	}
 	if a.Config.Profile == "hybrid" && len(localSessions) > 0 && !a.Config.AllowLocalSessionEviction {
 		physicalReady = false
 	}
@@ -349,6 +350,12 @@ func (a *Agent) Status() map[string]any {
 	active := make([]map[string]any, 0, len(localSessions)+len(remoteSessions))
 	active = append(active, localSessions...)
 	active = append(active, remoteSessions...)
+	remoteLabUserSessionIDs := make([]string, 0)
+	for _, session := range remoteSessions {
+		if isTinyDeskRemoteSession(session) {
+			remoteLabUserSessionIDs = append(remoteLabUserSessionIDs, fmt.Sprint(session["id"]))
+		}
+	}
 	status := map[string]any{
 		"schemaVersion": "3.0.0", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "host": a.Config.Name, "version": a.Config.Version,
 		"platform":     map[string]any{"os": "linux", "distro": distro, "distroVersion": distroVersion, "arch": architecture(), "kernel": platform.KernelRelease(), "init": initName, "capabilities": []string{"ssh-dispatcher", "dispatcher-v1", "dispatcher-v2", "reservation-lease-v1", "operation-status-v1", "status-v3", "heartbeat", "local-mode", "power", "power-idle-guard-v1"}},
@@ -362,7 +369,7 @@ func (a *Agent) Status() map[string]any {
 			"fmu":          host.Capability{Available: fileExists("/opt/decentralabs/fmu-executor/app/main.py"), Ready: fmuReady, Backend: "native", Issues: capabilityIssues(fmuReady, "FMU Executor is not installed or its token/service is unavailable")},
 			"remoteAccess": host.Capability{Available: physicalAvailable, Ready: remoteReady, Backend: "xrdp-xorg", Issues: physicalIssues},
 		},
-		"sessions":   map[string]any{"active": active, "localSessionActive": len(localSessions) > 0, "remoteSessionActive": hasLabUserRemote(remoteSessions), "labUserActive": hasLabUserRemote(remoteSessions), "labUserRemoteActive": hasLabUserRemote(remoteSessions), "localActive": len(localSessions), "remoteActive": len(remoteSessions), "queryOk": sessionsOK},
+		"sessions":   map[string]any{"active": active, "localSessionActive": len(localSessions) > 0, "remoteSessionActive": hasLabUserRemote(remoteSessions), "labUserActive": hasLabUserRemote(remoteSessions), "labUserRemoteActive": hasLabUserRemote(remoteSessions), "remoteLabUserSessionIds": remoteLabUserSessionIDs, "localActive": len(localSessions), "remoteActive": len(remoteSessions), "queryOk": sessionsOK},
 		"operations": a.latestOperation(), "localModeEnabled": a.localModeEnabled(),
 		"identity":         map[string]any{"hostname": a.Config.Name, "agentVersion": a.Config.Version, "contractVersion": "3.0.0", "dispatcherVersions": []int{1, 2}, "capabilities": []string{"reservation-lease-v1", "operation-status-v1"}},
 		"localGraphics":    map[string]any{"present": platform.LocalGraphicsPresent(), "displayManager": "not_modified_by_lab_station"},
@@ -398,6 +405,10 @@ func (a *Agent) Artifact(name string) ([]byte, error) {
 
 func (a *Agent) localModeEnabled() bool {
 	path := filepath.Join(a.Config.StateDir, "local-mode.flag")
+	if a.Config.Profile != "hybrid" {
+		_ = os.Remove(path)
+		return false
+	}
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return false
@@ -524,20 +535,80 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	if !sessionsOK {
 		return 2, "", "session inventory unavailable; refusing to prepare station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
 	}
-	if manualMaintenance && hasLabUserRemote(remote) {
-		return manualPrepareRemoteSessionRefusal()
+	remoteTargets, remoteAuthorized := remoteLabUserHandoffTargets(remote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+	if !remoteAuthorized {
+		if manualMaintenance {
+			return manualPrepareRemoteSessionRefusal()
+		}
+		return remoteLabUserPrepareRefusal()
 	}
-	localSessionDecision := localSessionPrepareDecision(a.Config.Profile, len(local), a.Config.AllowLocalSessionEviction)
+	handoffSessions := joinSessionTargets(local, remoteTargets)
+	localSessionDecision := localSessionPrepareDecision(a.Config.Profile, len(handoffSessions), a.Config.AllowLocalSessionEviction)
 	if localSessionDecision == "refuse" {
 		message := "unexpected local session on dedicated station"
 		if a.Config.Profile == "hybrid" {
 			message = "local user session is active; local-session eviction is disabled"
 		}
-		return 2, "", message, map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": local, "retryable": true}
+		return 2, "", message, map[string]any{"code": "STATION_LOCAL_SESSION_ACTIVE", "sessions": handoffSessions, "retryable": true}
 	}
 	acknowledgedSessions := 0
 	releasedSessionCount := 0
-	if localSessionDecision == "evict" {
+	if localSessionDecision == "notify-evict" {
+		graceSeconds := guardOptions.GraceSeconds
+		if graceSeconds < 30 {
+			graceSeconds = 30
+		}
+		if err := a.hostRuntime().NotifyLocalUsers(guardOptions.Message); err != nil {
+			a.log("prepare-local-session-notification-failed", map[string]any{"error": err.Error()})
+			return 2, "", "unable to notify local users; no session was released", map[string]any{"code": "STATION_SESSION_NOTIFICATION_FAILED", "retryable": true, "cleanupSkipped": true}
+		}
+		if err := a.waitSessionGrace(ctx, graceSeconds); err != nil {
+			return 2, "", "session handoff was cancelled", map[string]any{"code": "STATION_GUARD_CANCELLED", "retryable": true}
+		}
+		if a.localModeEnabled() {
+			return 2, "", "local mode became active during the session warning", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": true}
+		}
+		currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
+		currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+		currentTargets := joinSessionTargets(currentLocal, currentRemoteTargets)
+		if !currentOK {
+			return 2, "", "session inventory became unavailable during the warning; no session was released", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
+		}
+		if !authorized {
+			return remoteLabUserPrepareRefusal()
+		}
+		if !sameSessionSnapshot(handoffSessions, currentTargets) {
+			return 2, "", "session inventory changed during the warning; no session was released", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
+		}
+		releasedSessionCount = len(currentTargets)
+		releaseStarted := false
+		for _, session := range currentTargets {
+			latestLocal, latestRemote, latestOK := a.hostRuntime().Sessions()
+			latestRemoteTargets, latestAuthorized := remoteLabUserHandoffTargets(latestRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+			latestTargets := joinSessionTargets(latestLocal, latestRemoteTargets)
+			if !latestOK {
+				return 2, "", "session inventory became unavailable before session release", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": !releaseStarted}
+			}
+			if !latestAuthorized {
+				return remoteLabUserPrepareRefusal()
+			}
+			if !sameSessionSnapshot(currentTargets, latestTargets) {
+				return 2, "", "session inventory changed during handoff; no further session was released", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": !releaseStarted}
+			}
+			if !sessionSnapshotContainsID(latestTargets, fmt.Sprint(session["id"])) {
+				continue
+			}
+			if err := a.helper(ctx, helperSessionRequest(session, false, 0)); err != nil {
+				return 2, "", "unable to release user session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED", "retryable": !releaseStarted}
+			}
+			releaseStarted = true
+		}
+		remainingLocal, remainingRemote, currentOK := a.hostRuntime().Sessions()
+		remainingRemoteTargets, authorized := remoteLabUserHandoffTargets(remainingRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+		if !currentOK || !authorized || len(remainingLocal) != 0 || len(remainingRemoteTargets) != 0 {
+			return 2, "", "a user session remained active after the handoff", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": false}
+		}
+	} else if localSessionDecision == "evict" {
 		if a.Config.Profile == "hybrid" {
 			if !guardOptions.NoGuard {
 				graceSeconds := guardOptions.GraceSeconds
@@ -548,29 +619,57 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 					return localSessionAcknowledgementFailure(0, "session notification is disabled")
 				}
 				graceDeadline := time.Now().Add(time.Duration(graceSeconds) * time.Second)
-				for _, session := range local {
+				for _, session := range handoffSessions {
+					latestLocal, latestRemote, latestOK := a.hostRuntime().Sessions()
+					latestRemoteTargets, latestAuthorized := remoteLabUserHandoffTargets(latestRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+					latestTargets := joinSessionTargets(latestLocal, latestRemoteTargets)
+					if !latestOK {
+						return 2, "", "session inventory unavailable before the confirmation prompt", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true, "cleanupSkipped": true}
+					}
+					if !latestAuthorized || !sameSessionSnapshot(handoffSessions, latestTargets) {
+						return 2, "", "session inventory changed during confirmation; no session was closed", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true, "cleanupSkipped": true}
+					}
+					if !sessionSnapshotContainsID(latestTargets, fmt.Sprint(session["id"])) {
+						continue
+					}
 					remaining := remainingGraceSeconds(graceDeadline)
 					if remaining <= 0 {
-						currentLocal, _, currentOK := a.hostRuntime().Sessions()
+						currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
+						currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+						currentTargets := joinSessionTargets(currentLocal, currentRemoteTargets)
 						if !currentOK {
 							return 2, "", "session inventory unavailable after the confirmation deadline", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true, "cleanupSkipped": true}
 						}
-						if sessionSnapshotContainsID(currentLocal, fmt.Sprint(session["id"])) {
+						if !authorized || !sameSessionSnapshot(handoffSessions, currentTargets) {
+							return 2, "", "session inventory changed during confirmation; no session was closed", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true, "cleanupSkipped": true}
+						}
+						if sessionSnapshotContainsID(currentTargets, fmt.Sprint(session["id"])) {
 							return localSessionAcknowledgementFailure(acknowledgedSessions, "session acknowledgement timed out")
 						}
 						continue
 					}
 					if err := a.helper(ctx, helperSessionAcknowledgementRequest(session, guardOptions.Message, remaining)); err != nil {
-						currentLocal, _, currentOK := a.hostRuntime().Sessions()
+						currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
+						currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+						currentTargets := joinSessionTargets(currentLocal, currentRemoteTargets)
 						if !currentOK {
 							return 2, "", "session inventory unavailable after the confirmation prompt", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true, "cleanupSkipped": true}
 						}
-						if sessionSnapshotContainsID(currentLocal, fmt.Sprint(session["id"])) {
+						if !authorized || !sameSessionSnapshot(handoffSessions, currentTargets) {
+							return 2, "", "session inventory changed during confirmation; no session was closed", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true, "cleanupSkipped": true}
+						}
+						if sessionSnapshotContainsID(currentTargets, fmt.Sprint(session["id"])) {
 							return localSessionAcknowledgementFailure(acknowledgedSessions, "session did not acknowledge the warning")
 						}
 						continue
 					}
 					acknowledgedSessions++
+					currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
+					currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+					currentTargets := joinSessionTargets(currentLocal, currentRemoteTargets)
+					if !currentOK || !authorized || !sameSessionSnapshot(handoffSessions, currentTargets) {
+						return 2, "", "session inventory changed during confirmation; no session was closed", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true, "cleanupSkipped": true}
+					}
 				}
 				if err := a.waitSessionGrace(ctx, remainingGraceSeconds(graceDeadline)); err != nil {
 					return 2, "", "session guard was cancelled", map[string]any{"code": "STATION_GUARD_CANCELLED", "retryable": true}
@@ -579,40 +678,61 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 			if a.localModeEnabled() {
 				return 2, "", "local mode became active during the session guard", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": true}
 			}
-			currentLocal, _, currentOK := a.hostRuntime().Sessions()
-			if !currentOK || !sameSessionSnapshot(local, currentLocal) {
+			currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
+			currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+			currentTargets := joinSessionTargets(currentLocal, currentRemoteTargets)
+			if !currentOK || !authorized || !sameSessionSnapshot(handoffSessions, currentTargets) {
 				return 2, "", "local session inventory changed during the session guard", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
 			}
-			releasedSessionCount = len(currentLocal)
+			releasedSessionCount = len(currentTargets)
 			releaseStarted := false
-			for _, session := range currentLocal {
+			for _, session := range currentTargets {
+				latestLocal, latestRemote, latestOK := a.hostRuntime().Sessions()
+				latestRemoteTargets, latestAuthorized := remoteLabUserHandoffTargets(latestRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+				latestTargets := joinSessionTargets(latestLocal, latestRemoteTargets)
+				if !latestOK {
+					return 2, "", "session inventory became unavailable during session release", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": !releaseStarted}
+				}
+				if !latestAuthorized || !sameSessionSnapshot(currentTargets, latestTargets) {
+					return 2, "", "session inventory changed during session release", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": !releaseStarted}
+				}
+				if !sessionSnapshotContainsID(latestTargets, fmt.Sprint(session["id"])) {
+					continue
+				}
 				if a.localModeEnabled() {
 					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": !releaseStarted}
 				}
 				if err := a.helper(ctx, helperSessionRequest(session, false, 0)); err != nil {
-					return 2, "", "unable to release local user session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
+					return 2, "", "unable to release user session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
 				releaseStarted = true
 			}
-			remainingLocal, _, currentOK := a.hostRuntime().Sessions()
-			if !currentOK || len(remainingLocal) != 0 {
-				return 2, "", "local session inventory changed or a session remained active after release", map[string]any{"code": "STATION_SESSION_CHANGED"}
+			remainingLocal, remainingRemote, currentOK := a.hostRuntime().Sessions()
+			remainingRemoteTargets, authorized := remoteLabUserHandoffTargets(remainingRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+			if !currentOK || !authorized || len(remainingLocal) != 0 || len(remainingRemoteTargets) != 0 {
+				return 2, "", "session inventory changed or a user session remained active after release", map[string]any{"code": "STATION_SESSION_CHANGED"}
 			}
 		}
 	} else {
-		currentLocal, _, currentOK := a.hostRuntime().Sessions()
-		if !currentOK || len(currentLocal) != 0 || a.localModeEnabled() {
+		currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
+		currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+		if !currentOK || !authorized || len(currentLocal) != 0 || len(currentRemoteTargets) != 0 || a.localModeEnabled() {
 			return 2, "", "station state changed while preparing", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
 		}
 	}
-	if manualMaintenance {
-		_, currentRemote, currentOK := a.hostRuntime().Sessions()
-		if !currentOK {
-			return 2, "", "session inventory unavailable before cleanup; no cleanup ran", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
-		}
-		if hasLabUserRemote(currentRemote) {
+	currentLocal, currentRemote, currentOK := a.hostRuntime().Sessions()
+	if !currentOK {
+		return 2, "", "session inventory unavailable before cleanup; no cleanup ran", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
+	}
+	currentRemoteTargets, authorized := remoteLabUserHandoffTargets(currentRemote, guardOptions.UnreservedRemoteLabUserSessionIDs)
+	if !authorized || len(currentRemoteTargets) > 0 {
+		if manualMaintenance {
 			return manualPrepareRemoteSessionRefusal()
 		}
+		return remoteLabUserPrepareRefusal()
+	}
+	if len(currentLocal) > 0 {
+		return 2, "", "a new local session became active before cleanup; no cleanup ran", map[string]any{"code": "STATION_SESSION_CHANGED", "retryable": true}
 	}
 	if err := ctx.Err(); err != nil {
 		return 2, "", "session prepare was cancelled", map[string]any{"code": "STATION_OPERATION_CANCELLED"}
@@ -647,6 +767,47 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	return 0, "station prepared", "", map[string]any{"profile": a.Config.Profile, "releasedSessions": releasedSessionCount, "acknowledgedSessions": acknowledgedSessions, "guardBypassed": guardOptions.NoGuard && localSessionDecision == "evict", "cleanupWarnings": cleanupWarnings}
 }
 
+func remoteLabUserHandoffTargets(remoteSessions []map[string]any, authorizedIDs []string) ([]map[string]any, bool) {
+	authorized := make(map[string]bool, len(authorizedIDs))
+	for _, id := range authorizedIDs {
+		if !validSessionIdentifier(id) || authorized[id] {
+			return nil, false
+		}
+		authorized[id] = true
+	}
+	targets := make([]map[string]any, 0)
+	for _, session := range remoteSessions {
+		if !strings.EqualFold(fmt.Sprint(session["user"]), "labuser") {
+			continue
+		}
+		id := fmt.Sprint(session["id"])
+		if !isTinyDeskRemoteSession(session) || !authorized[id] {
+			return nil, false
+		}
+		targets = append(targets, session)
+	}
+	return targets, true
+}
+
+func joinSessionTargets(localSessions, remoteSessions []map[string]any) []map[string]any {
+	targets := make([]map[string]any, 0, len(localSessions)+len(remoteSessions))
+	targets = append(targets, localSessions...)
+	targets = append(targets, remoteSessions...)
+	return targets
+}
+
+func isTinyDeskRemoteSession(session map[string]any) bool {
+	if !strings.EqualFold(fmt.Sprint(session["user"]), "labuser") || !strings.EqualFold(fmt.Sprint(session["type"]), "x11") {
+		return false
+	}
+	remote, ok := session["remote"].(bool)
+	if !ok {
+		return false
+	}
+	seat := strings.TrimSpace(fmt.Sprint(session["seat"]))
+	return remote || (!remote && seat == "")
+}
+
 func localSessionAcknowledgementFailure(acknowledged int, reason string) (int, string, string, map[string]any) {
 	message := "local session was not acknowledged; no session was closed. " + reason + ". Retry Prepare after the local user can respond or signs out."
 	if reason == "session notification is disabled" {
@@ -671,13 +832,20 @@ func (a *Agent) waitSessionGrace(ctx context.Context, seconds int) error {
 }
 
 func manualPrepareRemoteSessionRefusal() (int, string, string, map[string]any) {
-	message := "Manual Prepare deletes LABUSER temporary files, Downloads, and lab scratch data and may interrupt open apps. An active remote LABUSER session was detected, so no cleanup ran. Run Release or log off the session before retrying."
+	message := "Manual Prepare deletes LABUSER temporary files, Downloads, and lab scratch data and may interrupt open apps. An active remote LABUSER session was detected, so no cleanup ran. Wait for it to disconnect before retrying."
 	return 2, "", message, map[string]any{"code": "STATION_REMOTE_SESSION_ACTIVE", "retryable": true, "cleanupSkipped": true}
+}
+
+func remoteLabUserPrepareRefusal() (int, string, string, map[string]any) {
+	return 2, "", "an active remote LABUSER session is using the Station; no reservation Prepare ran", map[string]any{"code": "STATION_REMOTE_SESSION_ACTIVE", "retryable": true, "cleanupSkipped": true}
 }
 
 func localSessionPrepareDecision(profile string, localSessionCount int, allowEviction bool) string {
 	if localSessionCount <= 0 {
 		return "continue"
+	}
+	if profile == "dedicated" {
+		return "notify-evict"
 	}
 	if profile == "hybrid" && allowEviction {
 		return "evict"
@@ -694,6 +862,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	}
 	reboot := false
 	requireRDPDisconnected := false
+	protectLocalSessions := false
 	rebootTimeout := 0
 	rebootTimeoutProvided := false
 	for _, arg := range args {
@@ -701,6 +870,11 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 		switch key {
 		case "--require-rdp-disconnected":
 			requireRDPDisconnected = true
+		case "--protect-local-sessions":
+			if hasValue {
+				return 2, "", "--protect-local-sessions does not take a value", map[string]any{"code": "STATION_COMMAND_REJECTED", "retryable": false}
+			}
+			protectLocalSessions = true
 		case "--reboot":
 			enabled, err := booleanOptionValue(value, hasValue, true)
 			if err != nil {
@@ -719,9 +893,21 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 			rebootTimeoutProvided = true
 		}
 	}
-	_, remote, sessionsOK := a.hostRuntime().Sessions()
+	local, remote, sessionsOK := a.hostRuntime().Sessions()
 	if !sessionsOK {
 		return 2, "", "session inventory unavailable; refusing to release station", map[string]any{"code": "STATION_SESSION_QUERY_FAILED", "retryable": true}
+	}
+	if protectLocalSessions {
+		if a.localModeEnabled() {
+			return 2, "", "local mode is active; automatic Release was deferred", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": true}
+		}
+		if safe, reason := expiredLeaseSessionSafety(a.Config.Profile, local, remote); !safe {
+			return 2, "", "automatic Release was deferred: " + reason, map[string]any{"code": "STATION_RELEASE_PROTECTED_SESSION_ACTIVE", "retryable": true}
+		}
+	}
+	administrativeRelease, _ := ctx.Value(administrativeReleaseContextKey{}).(bool)
+	if administrativeRelease && hasLabUserRemote(remote) {
+		return 2, "", "an active remote LABUSER session is protected; administrative Release did not run", map[string]any{"code": "STATION_REMOTE_SESSION_ACTIVE", "retryable": true}
 	}
 	if requireRDPDisconnected {
 		if connected, known := a.hostRuntime().RDPClientsConnected(); !known {
@@ -789,6 +975,31 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 			event["rebootTimeout"] = rebootTimeout
 		}
 		a.appendEvent(event)
+	}
+	if protectLocalSessions {
+		if a.localModeEnabled() {
+			fmuCleanupAttempted = false
+			recordReleaseEvent()
+			metadata := releaseMetadata()
+			metadata["code"] = "STATION_LOCAL_MODE_ACTIVE"
+			return 2, "automatic Release was deferred because local mode became active", "", metadata
+		}
+		currentLocal, currentRemote, currentKnown := a.hostRuntime().Sessions()
+		if !currentKnown {
+			fmuCleanupAttempted = false
+			recordReleaseEvent()
+			metadata := releaseMetadata()
+			metadata["code"] = "STATION_SESSION_QUERY_FAILED"
+			return 2, "session inventory became unavailable before FMU cleanup", "", metadata
+		}
+		if safe, reason := expiredLeaseSessionSafety(a.Config.Profile, currentLocal, currentRemote); !safe {
+			fmuCleanupAttempted = false
+			recordReleaseEvent()
+			metadata := releaseMetadata()
+			metadata["code"] = "STATION_RELEASE_PROTECTED_SESSION_ACTIVE"
+			metadata["reason"] = reason
+			return 2, "automatic Release was deferred before FMU cleanup: " + reason, "", metadata
+		}
 	}
 	fmuCleanupAttempted = true
 	if err := a.cleanFMUExecutorState(ctx); err != nil {
@@ -928,15 +1139,17 @@ func sessionSnapshotContainsID(sessions []map[string]any, expectedID string) boo
 }
 
 type sessionGuardOptions struct {
-	GraceSeconds int
-	Message      string
-	Notify       bool
-	NoGuard      bool
-	User         string
+	GraceSeconds                      int
+	Message                           string
+	Notify                            bool
+	NoGuard                           bool
+	User                              string
+	UnreservedRemoteLabUserSessionIDs []string
 }
 
 func parseSessionGuardOptions(args []string, defaultGrace int, allowUser bool) (sessionGuardOptions, error) {
-	options := sessionGuardOptions{GraceSeconds: defaultGrace, Message: "A remote laboratory reservation is starting; save your work now.", Notify: true}
+	options := sessionGuardOptions{GraceSeconds: defaultGrace, Message: "A remote laboratory reservation is starting. Save your work; this session will close after the grace period.", Notify: true}
+	authorizationSeen := false
 	for _, arg := range args {
 		key, value, hasValue := strings.Cut(arg, "=")
 		switch key {
@@ -980,9 +1193,55 @@ func parseSessionGuardOptions(args []string, defaultGrace int, allowUser bool) (
 				return options, errors.New("session guard user is invalid")
 			}
 			options.User = value
+		case "--unreserved-remote-labuser-sessions":
+			if authorizationSeen {
+				return options, errors.New("remote LABUSER session authorization may be supplied only once")
+			}
+			authorizationSeen = true
+			if !hasValue {
+				return options, errors.New("remote LABUSER session authorization requires session IDs")
+			}
+			ids, err := parseRemoteSessionAuthorization(value)
+			if err != nil {
+				return options, err
+			}
+			options.UnreservedRemoteLabUserSessionIDs = ids
 		}
 	}
 	return options, nil
+}
+
+func parseRemoteSessionAuthorization(value string) ([]string, error) {
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 || len(parts) > 32 {
+		return nil, errors.New("remote LABUSER session authorization has an invalid number of session IDs")
+	}
+	seen := make(map[string]bool, len(parts))
+	ids := make([]string, 0, len(parts))
+	for _, id := range parts {
+		if !validSessionIdentifier(id) || seen[id] {
+			return nil, errors.New("remote LABUSER session authorization contains an invalid or duplicate session ID")
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func validSessionIdentifier(value string) bool {
+	if len(value) < 1 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		alphaNumeric := char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9'
+		if index == 0 && !alphaNumeric {
+			return false
+		}
+		if !alphaNumeric && !strings.ContainsRune("_.:-", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func booleanOptionValue(value string, hasValue, defaultValue bool) (bool, error) {
@@ -1757,7 +2016,7 @@ func capabilityIssues(ready bool, message string) []string {
 }
 func hasLabUserRemote(sessions []map[string]any) bool {
 	for _, session := range sessions {
-		if session["user"] == "labuser" {
+		if strings.EqualFold(fmt.Sprint(session["user"]), "labuser") {
 			return true
 		}
 	}

@@ -30,12 +30,12 @@ func confirmLocalSession(ctx context.Context, request request) error {
 	if len(request.Message) == 0 || len(request.Message) > 256 || strings.ContainsRune(request.Message, '\x00') {
 		return errors.New("local session confirmation message is invalid")
 	}
-	if !approvedLocalSeatIdentity(request.SessionUser, request.SessionRemote, request.SessionSeat, request.SessionType) {
-		return errors.New("confirmation is limited to an interactive local user session")
+	if !approvedConfirmationSessionIdentity(request.SessionUser, request.SessionRemote, request.SessionSeat, request.SessionType) {
+		return errors.New("confirmation is limited to an interactive local or managed Tiny Desk session")
 	}
 	identity, err := readConfirmationSessionIdentity(ctx, request.SessionID)
-	if err != nil || !sameSessionIdentity(identity, request) || !approvedLocalSeatIdentity(identity["Name"], identity["Remote"], identity["Seat"], identity["Type"]) {
-		return errors.New("local session identity changed before confirmation")
+	if err != nil || !sameSessionIdentity(identity, request) || !approvedConfirmationSessionIdentity(identity["Name"], identity["Remote"], identity["Seat"], identity["Type"]) {
+		return errors.New("session identity changed before confirmation")
 	}
 
 	account, err := lookupSessionAccount(request.SessionUser)
@@ -105,6 +105,10 @@ func confirmLocalSession(ctx context.Context, request request) error {
 		return errors.New("local session did not acknowledge the Prepare warning")
 	}
 	return nil
+}
+
+func approvedConfirmationSessionIdentity(name, remote, seat, sessionType string) bool {
+	return approvedLocalSeatIdentity(name, remote, seat, sessionType) || isTinyDeskSession(name, remote, seat, sessionType)
 }
 
 func inspectLocalGraphicalEnvironment(ctx context.Context, sessionID string, uid uint32) (map[string]string, error) {

@@ -10,8 +10,8 @@ certification.
 1. Select a Linux host on the private management network and record its OS,
    architecture, supervisor, NIC, and current xrdp/SSH configuration.
 2. Choose `dedicated`, `hybrid`, or `fmu-only`. The last profile does not install
-   Tiny Desk GUI components. Use `hybrid` only when the host has a local
-   local user session that must be protected.
+   Tiny Desk GUI components. Use `hybrid` when the host is shared with local
+   users whose sessions may need protection during remote reservations.
 3. In Lab Manager, create or select the Linux Station. Set its SSH address and
    port, profile, and configured station application where applicable. Gateway
    generates and stores its private SSH key encrypted; copy the displayed
@@ -165,12 +165,27 @@ reservation begins. Keep the direct Guacamole connection and RDP network path
 restricted to trusted operators; the station does not enforce a lease at
 application launch.
 
-The local lease-expiry watchdog retries Release only after a completed failure
-explicitly marked `retryable`, which is limited to failures before session or
-FMU cleanup begins; every retry uses a fresh operation ID. A partial cleanup
-failure or an interrupted operation with an unknown outcome leaves the lease
-`recovery-required` and requires operator reconciliation rather than another
-automatic cleanup pass.
+The local lease-expiry watchdog persists every Release attempt. A failure
+before cleanup begins is retried with a fresh operation ID. If cleanup was
+partial or its outcome was interrupted, the lease stays `recovery-required`
+and blocks new reservations. `labstationd` starts a separate lease-bound
+Release reconciliation with a new operation ID every 60 seconds until the
+lease is cleared, either after expiry or sooner when a lease-bound Release
+itself failed into `recovery-required`. A failed Prepare does not trigger
+Release while the reservation is still active. Interrupted operations still
+marked `processing` are treated as unknown only after their operation lock is
+no longer held. The watchdog never replays the uncertain operation ID.
+Scheduled Gateway end retries also use a fresh lease-bound Release ID and the
+same local-session guard before FMU cleanup.
+
+Before automatic Release or reconciliation, the agent requires a valid stored
+lease identity, local mode off, a readable session inventory, and no protected
+interactive user. Hybrid defers while any local user session is active; both
+profiles defer for active remote accounts other than `labuser`. Dedicated may
+continue past a local `labuser` session. Active `labuser` Tiny Desk sessions
+are the intended cleanup target. Deferred recovery remains closed to new work
+and is checked again after one minute. An invalid lease identity or unsupported
+journal state remains blocked for operator repair.
 
 Reservation preparation clears Tiny Desk work files and FMU temporary state
 through bounded helper processes running as the account that owns each data
@@ -309,54 +324,75 @@ sudo labstationctl local-mode set --ttl=28800
 sudo labstationctl local-mode clear
 ```
 
-A valid expiry or recognized legacy timestamp ends the flag. A malformed or
-marker-only flag remains active until `clear`; file modification time is not
-used to infer when local use began.
+A valid expiry or recognized legacy timestamp ends the flag on Hybrid. A
+malformed or marker-only Hybrid flag remains active until `clear`; file
+modification time is not used to infer when local use began. Dedicated reports
+local mode as disabled and removes or ignores stale markers.
 
 Enable local mode only on a `hybrid` station, with a successful session
 inventory and no active reservation or remote lab-user session; it marks
 exclusive on-site use and expires after eight hours by default. `clear`
-remains available on any profile to remove a stale flag. `Prepare` and `Release` are supported only for
-`dedicated` and `hybrid` physical stations. Prepare rejects local mode and an
-unexpected local console session on a dedicated station. On hybrid, the default
-policy requires each eligible local desktop session to confirm its graphical
-prompt before Prepare can evict it. The 90-second Gateway grace deadline
-(minimum 30 seconds) starts when the first prompt appears; time spent confirming
-counts against it, and any remaining time allows voluntary sign-out. Setup
-installs `zenity` for this prompt; with `--no-install-deps`, install `zenity`
-manually. If a prompt is declined, times out, or cannot be displayed while its
-session remains active, Prepare fails before any session is closed or cleanup
-runs. A session that signs out during its prompt is already released. Set
-`station.allow_local_session_eviction = false` to make Prepare fail safely
-without terminating a local session; Windows uses the equivalent
+remains available on any profile to remove a stale flag. `Prepare` and `Release`
+are supported only for `dedicated` and `hybrid` physical stations. Dedicated
+warns every eligible local desktop session and any remote `labuser` session
+Gateway has authorized for handoff, waits the configured grace period, then
+hands the Station to the reservation without asking a user to accept or decline. If
+`wall` cannot send the warning, Prepare leaves sessions open and fails safely.
+Hybrid requires each eligible local desktop session to confirm its graphical
+prompt. A remote `labuser` session follows that same flow only when Gateway
+authoritatively confirms it has no existing reservation-access evidence. For
+reservation-bound Prepare, the incoming reservation may be the sole active or
+imminent reservation, provided it has no such evidence; another mapped-lab
+reservation or unknown reservation state blocks handoff. The
+90-second Gateway grace deadline (minimum 30
+seconds) starts when the first prompt appears; time spent confirming counts
+against it, and any remaining time allows voluntary sign-out. Setup installs
+`zenity` for this prompt; with `--no-install-deps`, install `zenity` manually.
+If a Hybrid prompt is declined, times out, or cannot be displayed while its
+session remains active, Prepare fails before cleanup. A session that signs out
+during its prompt is already released. Gateway passes the observed remote
+`labuser` session IDs to Prepare; Linux rechecks the exact inventory before
+prompting and before each termination. Set
+`station.allow_local_session_eviction = false` to make Hybrid Prepare fail
+safely without terminating a local session; Windows uses the equivalent
 `AllowLocalSessionEviction=false` entry in `labstation/data/station-profile.ini`.
-`--no-guard` is an explicit administrative bypass that skips confirmation and
-the grace period but still evicts immediately when policy allows. `--guard-notify=false`
-does not bypass the acknowledgement requirement. Release closes only the
-managed remote `labuser` session, preserves the local console session,
-then restarts an installed FMU Executor and clears temporary data. This
-service-wide cleanup can interrupt FMU work from that session. Release is
-rejected while a reservation or demo lease is active. Manual/no-lease Prepare
-also refuses with `STATION_REMOTE_SESSION_ACTIVE` while a remote
-`labuser` Tiny Desk session is present. The response explains that it would
-clear LABUSER temporary files, Downloads, and lab scratch data and may interrupt
-open apps; use Release or log off before retrying. The Station checks again
-immediately before cleanup, while reservation-bound Prepare keeps its lease
-flow.
+Hybrid `--no-guard` is an explicit administrative bypass. Dedicated always
+shows its warning and observes the grace period, including when a silent or
+bypass option is supplied. Release closes only the managed remote `labuser`
+session and preserves the local console session, then restarts an installed
+FMU Executor and clears temporary data. This service-wide cleanup can interrupt
+local FMU work. Release is rejected while a reservation or demo lease is active
+and is also blocked while any remote `labuser` session is present without a
+lease, because that session may belong to a reservation whose lease is missing.
+Prepare protects a remote `labuser` session when an associated reservation is
+active or Gateway cannot verify reservation state. Administrative Prepare is
+allowed to hand off the session only when no reservation is active or imminent
+for any mapped lab. Reservation-bound Prepare can hand off a residual session
+when its own reservation is the only active or imminent one and has no prior
+access-session evidence. Administrative Release remains blocked by every remote
+`labuser` session; it does not clear an unleased remote session.
+Remote sessions under other account names are not currently included in
+Prepare's handoff. Shared FMU Executor cleanup may affect their work, so do not
+assume that concurrent remote-account use is isolated.
 
 Before each physical reservation, Prepare clears Tiny Desk `tmp`, cache,
 Downloads, `Documents/LabStationScratch`, the XDG trash and recent-file list.
 It restarts an installed FMU Executor to close its sessions and clears its
 temporary work directory. It preserves desktop/application configuration and
-FMU models. Prepare records each local session's affirmative acknowledgement
-before eviction; a successful send alone is not treated as acknowledgement. If
-a session declines, does not respond, or has no usable graphical prompt while
-the session remains active, Prepare leaves it open and fails before cleanup or
-lease activation. A session that signs out during its prompt is treated as
-already released. Any remaining grace interval after confirmation allows
-voluntary sign-out.
+FMU models. Hybrid records each eligible session's affirmative acknowledgement
+before eviction; a successful send alone is not treated as acknowledgement.
+If a Hybrid session declines, does not respond, or has no usable graphical
+prompt while it remains active, Prepare leaves it open and fails before cleanup
+or lease activation. Dedicated does not request acknowledgement: it notifies
+all eligible sessions, waits the grace period, then releases the sessions that
+remain. A session that signs out during the warning/grace period is treated as
+already released. New or changed session inventory fails safely before logoff.
 Incomplete workspace or FMU cleanup is a failed Prepare (exit code 2) and
-leaves the lease `recovery-required` until an operator reconciles the station.
+leaves the lease `recovery-required`. Admission stays closed through the
+reservation window; after its expiry, the automatic Release reconciler attempts
+to restore a clean state. Protected user activity defers reconciliation, which
+is checked again after one minute. Operator repair is needed if the lease
+identity or journal is invalid.
 A local user who signs out during the grace interval is treated as already
 released; new or changed sessions cause Prepare to refuse before terminating
 any session.
@@ -377,11 +413,13 @@ shutdown if local mode is enabled, the inventory is unavailable, or a user
 session is active at either check.
 
 If Gateway reports a host-key mismatch, stop remote actions and compare the
-fingerprint through the trusted console before changing the pin. If lease state,
-session ownership, or operation outcome is uncertain, reconcile station status
-and the operation journal before retrying `prepare-session` or `release-session`;
-do not retry under a new operation ID. Disconnect provider maintenance sessions
-before a reservation begins.
+fingerprint through the trusted console before changing the pin. If the outcome
+of a specific dispatcher operation ID is uncertain, query that ID's recorded
+status and inspect the lease journal before deciding what to do; do not manually
+resubmit the same work under a new ID. The local recovery reconciler deliberately
+uses a fresh Release ID only after the lease is `recovery-required` and its
+preconditions pass. Disconnect provider maintenance sessions before a
+reservation begins.
 
 For an agent rollback from the portable bundle, run `rollback.sh` as root. It
 restores the previous agent binaries and restarts the station service. For a

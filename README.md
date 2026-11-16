@@ -30,8 +30,8 @@ readiness checks.
 
 | Profile | Intended use |
 |---|---|
-| `dedicated` | Linux host dedicated to remote laboratory use. |
-| `hybrid` | Host shared with local users; local mode protects declared on-site use, and remote preparation requires each eligible local desktop session to confirm before eviction. |
+| `dedicated` | Linux host dedicated to remote laboratory use. It cannot enable local mode. Prepare warns every eligible local session and any remote `labuser` session Gateway has authorized for handoff, waits through the configured grace period, and then hands the Station to the reservation without asking for confirmation. If the warning cannot be sent, Prepare leaves sessions open and fails safely. |
+| `hybrid` | Host shared with local users; `local-mode` protects declared on-site use. With it off and session eviction enabled, each eligible local or Gateway-authorized remote `labuser` desktop session must confirm before eviction; disabling eviction makes Prepare fail safely. |
 | `fmu-only` | Headless FMU endpoint; does not install Tiny Desk graphical components. |
 
 Windows and Linux use `dedicated` and `hybrid` as the physical-station

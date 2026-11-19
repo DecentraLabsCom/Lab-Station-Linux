@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-19
+
+### Added
+- Keep a reservation's XRDP Tiny Desk session available for a 120-second
+  reconnect window; after expiry, close managed applications and the desktop
+  session in order, then report completion with the reservation and lease
+  identity to Ops Worker.
+- Apply a 180-second XRDP disconnected-session limit as the host-wide fallback
+  if ordered cleanup does not finish.
+
 ## [0.6.0] - 2026-11-17
 
 ### Changed

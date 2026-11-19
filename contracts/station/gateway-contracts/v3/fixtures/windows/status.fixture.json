@@ -39,6 +39,8 @@
     ],
     "localSessionActive": false,
     "remoteSessionActive": true,
+    "remoteClientConnected": true,
+    "remoteClientStateKnown": true,
     "labUserActive": true,
     "queryOk": true
   },

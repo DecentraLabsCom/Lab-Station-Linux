@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "DecentraLabsCom/Lab-Gateway",
-  "commit": "33e440877d0d0cf5f7da3e1efe3978af03071af2",
+  "commit": "28aaca72e5410fd4e4899f0f0ef0315edb454b6a",
   "files": [
     {
       "source": "contracts/station/README.md",
       "target": "gateway-contracts/README.md",
-      "sha256": "a96212c5c5d726dfcb09d85b1106d5226d1e96e87b53b33ae02493fca0d3e0cd"
+      "sha256": "940e33872f68bd8471f0f79477e842e9a8ee4f0c05e2ca3e0cd8c7038844cf27"
     },
     {
       "source": "contracts/station/dispatcher/fixtures/failure-v2-response.fixture.json",
@@ -76,12 +76,12 @@
     {
       "source": "contracts/station/v3/fixtures/linux/status.fixture.json",
       "target": "gateway-contracts/v3/fixtures/linux/status.fixture.json",
-      "sha256": "246fe1bf77652c5ff61bc8d5eb44f2644b7bb73cbb38b601f12719340cdce9bb"
+      "sha256": "632f3c3e1d4a8c13395ed5f85410a5eecbf39f84689130b0e0f14fec1c7fbfdd"
     },
     {
       "source": "contracts/station/v3/fixtures/windows/status.fixture.json",
       "target": "gateway-contracts/v3/fixtures/windows/status.fixture.json",
-      "sha256": "a4f969e647cba00ea4b12ac9aa79c37c12580c0317445c3428f7be003a6d5136"
+      "sha256": "a1130b35f1a9f3c993e02eea63d12098123e7162697dfc33c35a7cc28506e00e"
     },
     {
       "source": "contracts/station/v3/heartbeat.schema.json",
@@ -91,7 +91,7 @@
     {
       "source": "contracts/station/v3/status.schema.json",
       "target": "gateway-contracts/v3/status.schema.json",
-      "sha256": "07d1e456c47e6942d78dfaad2faa52c94053f30cfe46b653851bfe57bffd6d40"
+      "sha256": "ac78d233a4100181309066c7b5f0fc4bb218a04cd2fb143db08059f83e19cb2c"
     },
     {
       "source": "docs/station-test-parity.json",

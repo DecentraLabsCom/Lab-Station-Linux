@@ -164,7 +164,7 @@ func (a *Agent) recordReservationDisconnectClose(identity reservationDisconnectI
 		reservationDisconnectIdentity: identity,
 		Success:                       true,
 		CompletedAt:                   time.Now().UTC().Format(time.RFC3339Nano),
-		Method:                         method,
+		Method:                        method,
 	}
 	if err := atomicJSON(filepath.Join(a.Config.StateDir, "reservation-disconnect-close.json"), record); err != nil {
 		return err

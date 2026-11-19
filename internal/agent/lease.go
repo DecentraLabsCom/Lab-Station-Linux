@@ -913,13 +913,3 @@ func markLeaseExpiryReconciliationRequired(state *leaseState, active leaseRecord
 		Generation: active.Generation, UpdatedAt: updatedAt, Result: &result,
 	}
 }
-
-func operationNeedsReconciliation(operation leaseOperation) bool {
-	if operation.State != "recovery-required" {
-		return false
-	}
-	if operation.Result == nil {
-		return true
-	}
-	return operation.Result.Metadata["code"] == "STATION_OPERATION_RECOVERY_REQUIRED"
-}

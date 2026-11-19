@@ -4,15 +4,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
 
 const (
-	tinyDeskXauthShimDir   = "/usr/lib/decentralabs/lab-station/xrdp-auth-bin"
-	tinyDeskXorgShimPath   = "/usr/lib/decentralabs/lab-station/xrdp-xorg"
-	defaultXrdpSessionPath = "/sbin:/bin:/usr/bin:/usr/local/bin"
-	xrdpOriginalXorgKey    = "LABSTATION_XORG_EXEC"
+	tinyDeskXauthShimDir                    = "/usr/lib/decentralabs/lab-station/xrdp-auth-bin"
+	tinyDeskXorgShimPath                    = "/usr/lib/decentralabs/lab-station/xrdp-xorg"
+	defaultXrdpSessionPath                  = "/sbin:/bin:/usr/bin:/usr/local/bin"
+	xrdpOriginalXorgKey                     = "LABSTATION_XORG_EXEC"
+	tinyDeskDisconnectGraceSeconds          = 120
+	tinyDeskDisconnectedSessionLimitSeconds = 180
 )
 
 func xrdpIDExecutable() (string, error) {
@@ -195,7 +198,178 @@ func transformXrdpSesmanConfig(input string) (string, string, string, error) {
 			lines = append(output, lines[sessionEnd:]...)
 		}
 	}
-	return strings.Join(lines, "\n"), xorgValue, pathValue, nil
+	updated, err := transformXrdpDisconnectedSessionPolicy(strings.Join(lines, "\n"))
+	if err != nil {
+		return "", "", "", err
+	}
+	return updated, xorgValue, pathValue, nil
+}
+
+// transformXrdpDisconnectedSessionPolicy keeps XRDP sessions available for a
+// short reconnect window, then lets sesman terminate the disconnected Xorg
+// session. The policy is host-wide for xorgxrdp sessions.
+func transformXrdpDisconnectedSessionPolicy(input string) (string, error) {
+	lines := strings.Split(input, "\n")
+	section := ""
+	sessionsSections := 0
+	sessionsEnd := -1
+	killIndex, limitIndex := -1, -1
+	for index, line := range lines {
+		value := strings.TrimSpace(line)
+		if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+			if section == "sessions" && sessionsEnd == -1 {
+				sessionsEnd = index
+			}
+			section = strings.ToLower(strings.TrimSpace(value[1 : len(value)-1]))
+			if section == "sessions" {
+				sessionsSections++
+			}
+			continue
+		}
+		if section != "sessions" || strings.HasPrefix(value, "#") || strings.HasPrefix(value, ";") {
+			continue
+		}
+		key, _, ok := strings.Cut(value, "=")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "killdisconnected":
+			if killIndex != -1 {
+				return "", fmt.Errorf("sesman.ini has multiple KillDisconnected entries")
+			}
+			killIndex = index
+		case "disconnectedtimelimit":
+			if limitIndex != -1 {
+				return "", fmt.Errorf("sesman.ini has multiple DisconnectedTimeLimit entries")
+			}
+			limitIndex = index
+		}
+	}
+	if sessionsSections > 1 {
+		return "", fmt.Errorf("sesman.ini has multiple [Sessions] sections")
+	}
+	if sessionsSections == 0 {
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+		lines = append(lines, "[Sessions]", "KillDisconnected=true", fmt.Sprintf("DisconnectedTimeLimit=%d", tinyDeskDisconnectedSessionLimitSeconds), "")
+		return strings.Join(lines, "\n"), nil
+	}
+
+	if killIndex != -1 {
+		lines[killIndex] = "KillDisconnected=true"
+	}
+	if limitIndex != -1 {
+		lines[limitIndex] = fmt.Sprintf("DisconnectedTimeLimit=%d", tinyDeskDisconnectedSessionLimitSeconds)
+	}
+	if sessionsEnd == -1 {
+		sessionsEnd = len(lines)
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			sessionsEnd--
+		}
+	}
+	var additions []string
+	if killIndex == -1 {
+		additions = append(additions, "KillDisconnected=true")
+	}
+	if limitIndex == -1 {
+		additions = append(additions, fmt.Sprintf("DisconnectedTimeLimit=%d", tinyDeskDisconnectedSessionLimitSeconds))
+	}
+	if len(additions) > 0 {
+		updated := append([]string{}, lines[:sessionsEnd]...)
+		updated = append(updated, additions...)
+		lines = append(updated, lines[sessionsEnd:]...)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func parseXrdpDisconnectedSessionPolicy(input string) (killDisconnected, hasKillDisconnected bool, limitSeconds int, hasLimitSeconds bool, err error) {
+	section := ""
+	sessionsSections := 0
+	killEntries, limitEntries := 0, 0
+	for _, line := range strings.Split(input, "\n") {
+		value := strings.TrimSpace(line)
+		if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+			section = strings.ToLower(strings.TrimSpace(value[1 : len(value)-1]))
+			if section == "sessions" {
+				sessionsSections++
+			}
+			continue
+		}
+		if section != "sessions" || strings.HasPrefix(value, "#") || strings.HasPrefix(value, ";") {
+			continue
+		}
+		key, item, ok := strings.Cut(value, "=")
+		if !ok {
+			continue
+		}
+		item = strings.TrimSpace(item)
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "killdisconnected":
+			killEntries++
+			if killEntries > 1 {
+				return false, false, 0, false, fmt.Errorf("sesman.ini has multiple KillDisconnected entries")
+			}
+			switch strings.ToLower(item) {
+			case "true", "yes", "1", "on":
+				killDisconnected = true
+			case "false", "no", "0", "off":
+				killDisconnected = false
+			default:
+				return false, false, 0, false, fmt.Errorf("sesman.ini has an invalid KillDisconnected value")
+			}
+			hasKillDisconnected = true
+		case "disconnectedtimelimit":
+			limitEntries++
+			if limitEntries > 1 {
+				return false, false, 0, false, fmt.Errorf("sesman.ini has multiple DisconnectedTimeLimit entries")
+			}
+			limitSeconds, err = strconv.Atoi(item)
+			if err != nil {
+				return false, false, 0, false, fmt.Errorf("sesman.ini has an invalid DisconnectedTimeLimit value")
+			}
+			hasLimitSeconds = true
+		}
+	}
+	if sessionsSections > 1 {
+		return false, false, 0, false, fmt.Errorf("sesman.ini has multiple [Sessions] sections")
+	}
+	return killDisconnected, hasKillDisconnected, limitSeconds, hasLimitSeconds, nil
+}
+
+func xrdpDisconnectedSessionPolicyStatus(path string) map[string]any {
+	status := map[string]any{
+		"source":     "xrdp-sesman",
+		"scope":      "all-xorgxrdp-sessions",
+		"available":  false,
+		"configured": false,
+		"ready":      false,
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		status["message"] = "XRDP sesman configuration is unavailable"
+		return status
+	}
+	status["available"] = true
+	killDisconnected, hasKillDisconnected, limitSeconds, hasLimitSeconds, err := parseXrdpDisconnectedSessionPolicy(string(data))
+	if err != nil {
+		status["message"] = err.Error()
+		return status
+	}
+	if hasKillDisconnected {
+		status["killDisconnected"] = killDisconnected
+	}
+	if hasLimitSeconds {
+		status["limitSeconds"] = limitSeconds
+	}
+	configured := hasKillDisconnected && killDisconnected && hasLimitSeconds && limitSeconds == tinyDeskDisconnectedSessionLimitSeconds
+	status["configured"] = configured
+	status["ready"] = configured
+	if !configured {
+		status["message"] = fmt.Sprintf("expected KillDisconnected=true and DisconnectedTimeLimit=%d; Lab Station closes Tiny Desk after %d seconds", tinyDeskDisconnectedSessionLimitSeconds, tinyDeskDisconnectGraceSeconds)
+	}
+	return status
 }
 
 func xrdpShellLiteral(value string) string {

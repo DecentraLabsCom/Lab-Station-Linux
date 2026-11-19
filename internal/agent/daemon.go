@@ -52,6 +52,9 @@ func (a *Agent) Run(ctx context.Context) error {
 				a.log("heartbeat-write-failed", map[string]any{"error": err.Error()})
 			}
 		case <-watchdogTimer.C:
+			if err := a.enforceReservationDisconnectClose(ctx); err != nil {
+				a.log("reservation-disconnect-close-error", map[string]any{"error": err.Error()})
+			}
 			if err := a.enforceLeaseExpiry(ctx); err != nil {
 				a.log("lease-watchdog-error", map[string]any{"error": err.Error()})
 			}

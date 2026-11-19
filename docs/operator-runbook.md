@@ -226,14 +226,24 @@ helper revalidates the XRDP session and uses logind's session termination as
 the final fallback. This behavior applies to managed XRDP/Xorg Tiny Desk
 sessions, not Wayland desktops.
 
-Closing the browser or Guacamole tunnel does not release the XRDP session.
-Without a matching lease or Gateway proof that the exact session is unreserved,
-the daemon leaves a remote `labuser` session open because it may belong to an
-active reservation whose lease has not reached the Station. Reconnecting stays
-possible. Gateway-authorized Prepare can hand off only the session IDs covered
-by its reservation check; otherwise an operator must confirm that no reservation
-is active before ending the OS session. A matching reservation Release or the
-lease-expiry reconciler ends the managed session.
+Closing the browser or Guacamole tunnel disconnects, but does not immediately
+release, the XRDP session. During a reservation, the agent keeps Tiny Desk
+available for 120 seconds. A reconnect within that window resumes the same
+desktop and leaves its applications running. If it remains disconnected, the
+agent requests the controlled Tiny Desk close, waits for the session to end,
+and publishes `reservationDisconnectClose` with the reservation and lease
+identity. Ops Worker waits for that status before running reservation end energy
+phases. XRDP's 180-second disconnected-session limit is a host-wide hard fallback
+for all `xorgxrdp` sessions.
+
+This local 120-second grace does not clear a Gateway reservation lease, release
+energy policies, or stop an FMU. Reservation end still follows the matching
+Gateway `Release` or the lease-expiry reconciler. Without a matching lease or
+Gateway proof that the exact session is unreserved, the daemon leaves a remote
+`labuser` session open because it may belong to an active reservation whose
+lease has not reached the Station. Gateway-authorized Prepare can hand off only
+session IDs covered by its reservation check; otherwise an operator must confirm
+no reservation is active before ending the OS session.
 
 ### Configure Guacamole for Linux XRDP
 

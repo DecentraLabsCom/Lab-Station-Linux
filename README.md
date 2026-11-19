@@ -77,6 +77,14 @@ It can first click a configured button in the single app or primary multi-app
 window when that window is active. Multi-app closes share a 10-second maximum
 deadline.
 
+When an RDP client disconnects during a reservation, Lab Station keeps Tiny
+Desk available for a 120-second reconnect window. If it remains disconnected,
+the agent requests the same orderly application close used by reservation
+Release and reports completion to Ops Worker. XRDP's 180-second disconnected
+session limit is the operating-system fallback if that close cannot finish.
+The hard limit applies to all `xorgxrdp` sessions; it does not change
+reservation lease or FMU release timing.
+
 ## Lab Gateway integration
 
 Gateway manages Linux stations through a restricted SSH account and a

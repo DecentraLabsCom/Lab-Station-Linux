@@ -34,6 +34,7 @@ type Agent struct {
 	rebootMarker                  func() bool
 	secretProbe                   func() bool
 	mu                            sync.Mutex
+	disconnectMu                  sync.Mutex
 }
 
 type Result struct {
@@ -280,13 +281,24 @@ func (a *Agent) Status() map[string]any {
 	}
 	interfaces := platform.NetworkInterfaces()
 	localSessions, remoteSessions, sessionsOK := platform.Sessions()
+	remoteClientConnected, remoteClientStateKnown := false, false
+	if a.Config.Profile != "fmu-only" {
+		remoteClientConnected, remoteClientStateKnown = platform.RDPClientsConnected()
+	}
 	xrdpState := serviceState(supervisor, "xrdp.service")
 	if xrdpState == "unknown" {
 		xrdpState = serviceState(supervisor, "xrdp")
 	}
 	applicationConfigured := a.Config.Profile != "fmu-only" && a.applicationAvailable()
-	remoteReady := applicationConfigured && xrdpState == "active" && a.tinyDeskConfigurationReady()
 	physicalAvailable := a.Config.Profile != "fmu-only"
+	tinyDeskReady := !physicalAvailable || a.tinyDeskConfigurationReady()
+	remoteReady := applicationConfigured && xrdpState == "active" && tinyDeskReady
+	rdpSessionPolicy := map[string]any{"applicable": physicalAvailable}
+	if physicalAvailable {
+		for key, value := range xrdpDisconnectedSessionPolicyStatus("/etc/xrdp/sesman.ini") {
+			rdpSessionPolicy[key] = value
+		}
+	}
 	fmuState := serviceState(supervisor, "decentralabs-labstation-fmu.service")
 	fmuConfigured := a.fmuSecretConfigured()
 	fmuReady := fmuConfigured && fmuState == "active"
@@ -309,8 +321,8 @@ func (a *Agent) Status() map[string]any {
 	if physicalAvailable && xrdpState != "active" {
 		physicalIssues = append(physicalIssues, "xrdp service is not active")
 	}
-	if physicalAvailable && !a.tinyDeskConfigurationReady() {
-		physicalIssues = append(physicalIssues, "Tiny Desk session or RDP policy is not ready; verify XRDP startup configuration, wmctrl, xdotool when close coordinates are configured, the labuser password and xrdp channel restrictions")
+	if physicalAvailable && !tinyDeskReady {
+		physicalIssues = append(physicalIssues, "Tiny Desk session or its 180-second disconnected-session hard limit is not ready; verify XRDP startup configuration, wmctrl, xdotool when close coordinates are configured, the labuser password and xrdp channel restrictions")
 	}
 	if physicalAvailable && !sessionsOK {
 		physicalIssues = append(physicalIssues, "login session inventory is unavailable")
@@ -367,17 +379,18 @@ func (a *Agent) Status() map[string]any {
 			"fmu":          host.Capability{Available: fileExists("/opt/decentralabs/fmu-executor/app/main.py"), Ready: fmuReady, Backend: "native", Issues: capabilityIssues(fmuReady, "FMU Executor is not installed or its token/service is unavailable")},
 			"remoteAccess": host.Capability{Available: physicalAvailable, Ready: remoteReady, Backend: "xrdp-xorg", Issues: physicalIssues},
 		},
-		"sessions":   map[string]any{"active": active, "localSessionActive": len(localSessions) > 0, "remoteSessionActive": hasLabUserRemote(remoteSessions), "labUserActive": hasLabUserRemote(remoteSessions), "labUserRemoteActive": hasLabUserRemote(remoteSessions), "remoteLabUserSessionIds": remoteLabUserSessionIDs, "localActive": len(localSessions), "remoteActive": len(remoteSessions), "queryOk": sessionsOK},
+		"sessions":   map[string]any{"active": active, "localSessionActive": len(localSessions) > 0, "remoteSessionActive": hasLabUserRemote(remoteSessions), "remoteClientConnected": remoteClientConnected, "remoteClientStateKnown": remoteClientStateKnown, "labUserActive": hasLabUserRemote(remoteSessions), "labUserRemoteActive": hasLabUserRemote(remoteSessions), "remoteLabUserSessionIds": remoteLabUserSessionIDs, "localActive": len(localSessions), "remoteActive": len(remoteSessions), "queryOk": sessionsOK},
 		"operations": a.latestOperation(), "localModeEnabled": a.localModeEnabled(),
-		"identity":         map[string]any{"hostname": a.Config.Name, "agentVersion": a.Config.Version, "contractVersion": "3.0.0", "dispatcherVersions": []int{1, 2}, "capabilities": []string{"reservation-lease-v1", "operation-status-v1"}},
-		"localGraphics":    map[string]any{"present": platform.LocalGraphicsPresent(), "displayManager": "not_modified_by_lab_station"},
-		"application":      map[string]any{"id": a.Config.Application.ID, "configured": applicationConfigured, "available": applicationConfigured, "commandHash": a.applicationHash(), "configHash": a.configurationHash()},
-		"policy":           map[string]any{"setup": "managed", "privilegedHelper": fileExists("/usr/lib/decentralabs/lab-station/labstation-helper"), "allowLocalSessionEviction": a.Config.AllowLocalSessionEviction},
-		"wake":             map[string]any{"interfaces": interfaces, "supported": wakeSupported, "enabled": wakeEnabled, "persistent": wakePersistent, "complianceIssues": wakeIssues},
-		"power":            a.powerCapabilities(),
-		"fmuExecutor":      map[string]any{"mode": "native", "available": fileExists("/opt/decentralabs/fmu-executor/app/main.py"), "version": fileText("/opt/decentralabs/fmu-executor/VERSION"), "serviceState": fmuState, "ready": fmuReady, "tokenConfigured": fmuConfigured, "port": 8091},
-		"supportTier":      "unverified",
-		"platformSpecific": map[string]any{"linux": map[string]any{"supervisor": initName, "packageManager": firstValue(host.DetectPackageManager())}},
+		"reservationDisconnectClose": a.reservationDisconnectCloseStatus(),
+		"identity":                   map[string]any{"hostname": a.Config.Name, "agentVersion": a.Config.Version, "contractVersion": "3.0.0", "dispatcherVersions": []int{1, 2}, "capabilities": []string{"reservation-lease-v1", "operation-status-v1"}},
+		"localGraphics":              map[string]any{"present": platform.LocalGraphicsPresent(), "displayManager": "not_modified_by_lab_station"},
+		"application":                map[string]any{"id": a.Config.Application.ID, "configured": applicationConfigured, "available": applicationConfigured, "commandHash": a.applicationHash(), "configHash": a.configurationHash()},
+		"policy":                     map[string]any{"setup": "managed", "privilegedHelper": fileExists("/usr/lib/decentralabs/lab-station/labstation-helper"), "allowLocalSessionEviction": a.Config.AllowLocalSessionEviction, "rdpDisconnectedSession": rdpSessionPolicy},
+		"wake":                       map[string]any{"interfaces": interfaces, "supported": wakeSupported, "enabled": wakeEnabled, "persistent": wakePersistent, "complianceIssues": wakeIssues},
+		"power":                      a.powerCapabilities(),
+		"fmuExecutor":                map[string]any{"mode": "native", "available": fileExists("/opt/decentralabs/fmu-executor/app/main.py"), "version": fileText("/opt/decentralabs/fmu-executor/VERSION"), "serviceState": fmuState, "ready": fmuReady, "tokenConfigured": fmuConfigured, "port": 8091},
+		"supportTier":                "unverified",
+		"platformSpecific":           map[string]any{"linux": map[string]any{"supervisor": initName, "packageManager": firstValue(host.DetectPackageManager())}},
 	}
 	return status
 }

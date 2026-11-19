@@ -152,6 +152,14 @@
           "description": "True when any interactive physical-console or seat session exists, regardless of account; excludes remote RDP/Tiny Desk sessions."
         },
         "remoteSessionActive": { "type": "boolean" },
+        "remoteClientConnected": {
+          "type": "boolean",
+          "description": "True when an active remote client is attached to the physical lab session; does not describe disconnected desktop sessions."
+        },
+        "remoteClientStateKnown": {
+          "type": "boolean",
+          "description": "True only when the Station could determine whether a remote client is connected."
+        },
         "remoteLabUserSessionIds": {
           "type": "array",
           "description": "Session identifiers for every existing remote LABUSER session, including disconnected Windows RDP sessions; Gateway authorization is tied to this exact snapshot.",

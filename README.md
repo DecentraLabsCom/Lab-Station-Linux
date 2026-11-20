@@ -80,10 +80,16 @@ deadline.
 When an RDP client disconnects during a reservation, Lab Station keeps Tiny
 Desk available for a 120-second reconnect window. If it remains disconnected,
 the agent requests the same orderly application close used by reservation
-Release and reports completion to Ops Worker. XRDP's 180-second disconnected
-session limit is the operating-system fallback if that close cannot finish.
-The hard limit applies to all `xorgxrdp` sessions; it does not change
-reservation lease or FMU release timing.
+Release and reports completion to Ops Worker. If the orderly close fails while
+the desktop is still present, Station keeps the disconnected XRDP session
+available for Gateway's 180-second `release-session` retry instead of
+terminating it locally. The Gateway retry requests the same orderly Tiny Desk
+close and can terminate the disconnected desktop if that close still fails.
+If the desktop closed but Station could not report it, the Gateway command
+rechecks the session and remains safe to repeat. XRDP's 240-second
+disconnected-session limit is the operating-system fallback if those cleanup
+attempts cannot finish. The hard limit applies to all `xorgxrdp` sessions; it
+does not change reservation lease or FMU release timing.
 
 ## Lab Gateway integration
 

@@ -246,6 +246,12 @@ func ValidateCommand(command string, args []string) error {
 				return errors.New("--require-idle only applies to shutdown and takes no value")
 			}
 		}
+		if command == "release-session" && key == "--require-rdp-disconnected" {
+			_, _, hasValue := strings.Cut(arg, "=")
+			if hasValue {
+				return errors.New("--require-rdp-disconnected takes no value")
+			}
+		}
 		if command == "session guard" && key == "--user" {
 			_, value, hasValue := strings.Cut(arg, "=")
 			if !hasValue || !validLocalUsername(value) {
@@ -322,7 +328,7 @@ func (a *Agent) Status() map[string]any {
 		physicalIssues = append(physicalIssues, "xrdp service is not active")
 	}
 	if physicalAvailable && !tinyDeskReady {
-		physicalIssues = append(physicalIssues, "Tiny Desk session or its 180-second disconnected-session hard limit is not ready; verify XRDP startup configuration, wmctrl, xdotool when close coordinates are configured, the labuser password and xrdp channel restrictions")
+		physicalIssues = append(physicalIssues, "Tiny Desk session or its 240-second disconnected-session hard limit is not ready; verify XRDP startup configuration, wmctrl, xdotool when close coordinates are configured, the labuser password and xrdp channel restrictions")
 	}
 	if physicalAvailable && !sessionsOK {
 		physicalIssues = append(physicalIssues, "login session inventory is unavailable")
@@ -609,7 +615,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 			if !sessionSnapshotContainsID(latestTargets, fmt.Sprint(session["id"])) {
 				continue
 			}
-			if err := a.helper(ctx, helperSessionRequest(session, false, 0)); err != nil {
+			if err := a.helper(ctx, helperSessionRequest(session, false, 0, false)); err != nil {
 				return 2, "", "unable to release user session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED", "retryable": !releaseStarted}
 			}
 			releaseStarted = true
@@ -713,7 +719,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 				if a.localModeEnabled() {
 					return 2, "", "local mode became active during session release", map[string]any{"code": "STATION_LOCAL_MODE_ACTIVE", "retryable": !releaseStarted}
 				}
-				if err := a.helper(ctx, helperSessionRequest(session, false, 0)); err != nil {
+				if err := a.helper(ctx, helperSessionRequest(session, false, 0, false)); err != nil {
 					return 2, "", "unable to release user session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED"}
 				}
 				releaseStarted = true
@@ -936,21 +942,46 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 			return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED", "retryable": false}
 		}
 	}
-	terminated := 0
-	for _, session := range remote {
-		if session["user"] == "labuser" && session["type"] == "x11" {
+	terminated, closeFailureCode, closeFailure := func() (int, string, string) {
+		a.disconnectMu.Lock()
+		defer a.disconnectMu.Unlock()
+
+		currentLocal, currentRemote, currentKnown := a.hostRuntime().Sessions()
+		if !currentKnown {
+			return 0, "STATION_SESSION_QUERY_FAILED", "session inventory became unavailable before Tiny Desk close"
+		}
+		if protectLocalSessions {
+			if a.localModeEnabled() {
+				return 0, "STATION_LOCAL_MODE_ACTIVE", "local mode became active before automatic session release"
+			}
+			if safe, reason := expiredLeaseSessionSafety(a.Config.Profile, currentLocal, currentRemote); !safe {
+				return 0, "STATION_RELEASE_PROTECTED_SESSION_ACTIVE", "automatic Release was deferred: " + reason
+			}
+		}
+		closed := 0
+		for _, session := range currentRemote {
+			if !isTinyDeskRemoteSession(session) {
+				continue
+			}
 			if requireRDPDisconnected {
 				if connected, known := a.hostRuntime().RDPClientsConnected(); !known {
-					return 2, "", "RDP connection state is unavailable; refusing automatic session release", map[string]any{"code": "STATION_RDP_CLIENT_STATE_UNKNOWN", "retryable": true}
+					return closed, "STATION_RDP_CLIENT_STATE_UNKNOWN", "RDP connection state is unavailable; refusing automatic session release"
 				} else if connected {
-					return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED", "retryable": false}
+					return closed, "STATION_RDP_CLIENT_CONNECTED", "an RDP client reconnected; automatic session release was cancelled"
 				}
 			}
-			if err := a.helper(ctx, helperSessionRequest(session, true, a.Config.Application.CloseTimeoutSeconds)); err != nil {
-				return 2, "", "unable to close Tiny Desk session", map[string]any{"code": "STATION_SESSION_TERMINATION_FAILED", "retryable": false}
+			if err := a.helper(ctx, helperSessionRequest(session, true, a.Config.Application.CloseTimeoutSeconds, true)); err != nil {
+				return closed, "STATION_SESSION_TERMINATION_FAILED", "unable to close Tiny Desk session: " + err.Error()
 			}
-			terminated++
+			closed++
 		}
+		return closed, "", ""
+	}()
+	if closeFailure != "" {
+		retryable := closeFailureCode == "STATION_RDP_CLIENT_STATE_UNKNOWN" ||
+			closeFailureCode == "STATION_SESSION_QUERY_FAILED" ||
+			closeFailureCode == "STATION_RELEASE_PROTECTED_SESSION_ACTIVE"
+		return 2, "", closeFailure, map[string]any{"code": closeFailureCode, "retryable": retryable}
 	}
 	rebootScheduled := false
 	rebootDeferred := false
@@ -1076,7 +1107,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	return 0, "station released", "", releaseMetadata()
 }
 
-func helperSessionRequest(session map[string]any, force bool, closeTimeoutSeconds int) map[string]any {
+func helperSessionRequest(session map[string]any, force bool, closeTimeoutSeconds int, terminateOnCloseFailure bool) map[string]any {
 	remote := "no"
 	switch value := session["remote"].(type) {
 	case bool:
@@ -1087,14 +1118,15 @@ func helperSessionRequest(session map[string]any, force bool, closeTimeoutSecond
 		remote = value
 	}
 	return map[string]any{
-		"operation":           "terminate-session",
-		"sessionId":           fmt.Sprint(session["id"]),
-		"sessionUser":         fmt.Sprint(session["user"]),
-		"sessionRemote":       remote,
-		"sessionSeat":         fmt.Sprint(session["seat"]),
-		"sessionType":         fmt.Sprint(session["type"]),
-		"forceSession":        force,
-		"closeTimeoutSeconds": closeTimeoutSeconds,
+		"operation":               "terminate-session",
+		"sessionId":               fmt.Sprint(session["id"]),
+		"sessionUser":             fmt.Sprint(session["user"]),
+		"sessionRemote":           remote,
+		"sessionSeat":             fmt.Sprint(session["seat"]),
+		"sessionType":             fmt.Sprint(session["type"]),
+		"forceSession":            force,
+		"terminateOnCloseFailure": terminateOnCloseFailure,
+		"closeTimeoutSeconds":     closeTimeoutSeconds,
 	}
 }
 

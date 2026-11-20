@@ -47,6 +47,9 @@ func closeTinyDeskSession(ctx context.Context, request request) error {
 			}
 		}
 	}
+	if !request.TerminateOnCloseFailure {
+		return errors.New("orderly Tiny Desk close did not end the session; keeping it for Gateway release")
+	}
 	return terminateApprovedTinyDeskSession(ctx, request, scope)
 }
 

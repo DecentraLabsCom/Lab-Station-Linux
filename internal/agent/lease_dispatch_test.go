@@ -29,6 +29,30 @@ func dispatchTestRequest(t *testing.T, a *Agent, raw string) Result {
 	return decodeResult(t, output.Bytes())
 }
 
+func TestLeaseExpiryRetryPreservesDisconnectGuardUntilReservationEnd(t *testing.T) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Minute)
+	active := leaseRecord{LeaseID: "lease-disconnect", Generation: 4}
+	state := leaseState{Operations: map[string]leaseOperation{
+		"gateway-release": {
+			Command:                "release-session",
+			LeaseID:                active.LeaseID,
+			Generation:             active.Generation,
+			RequireRDPDisconnected: true,
+		},
+	}}
+
+	beforeEnd := leaseExpiryReleaseArgs(state, active, now, expiresAt)
+	if len(beforeEnd) != 2 || beforeEnd[0] != "--protect-local-sessions" || beforeEnd[1] != "--require-rdp-disconnected" {
+		t.Fatalf("early disconnect retry lost its RDP guard: %#v", beforeEnd)
+	}
+
+	atEnd := leaseExpiryReleaseArgs(state, active, expiresAt, expiresAt)
+	if len(atEnd) != 1 || atEnd[0] != "--protect-local-sessions" {
+		t.Fatalf("scheduled reservation expiry should own an unguarded final release: %#v", atEnd)
+	}
+}
+
 func makeLeaseReconciliationDue(t *testing.T, stateDir, leaseID string, generation uint64) {
 	t.Helper()
 	lock, err := lockLeaseJournal(stateDir)
@@ -519,7 +543,7 @@ func TestLeaseExpiryDoesNotRetryPartialCleanupFailure(t *testing.T) {
 }
 
 func TestLeaseExpiryDoesNotReplayInterruptedCleanup(t *testing.T) {
-	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11"}}}
+	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11", "remote": true}}}
 	a, calls := newTestAgent(t, "dedicated", runtime)
 	now := time.Now().UTC()
 	active := leaseRecord{
@@ -545,7 +569,7 @@ func TestLeaseExpiryDoesNotReplayInterruptedCleanup(t *testing.T) {
 }
 
 func TestLeaseExpiryAutomaticallyReconcilesUnclassifiedRecoveryState(t *testing.T) {
-	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11"}}}
+	runtime := &fakeRuntime{sessionsOK: true, remote: []map[string]any{{"id": "expired-rdp", "user": "labuser", "type": "x11", "remote": true}}}
 	a, calls := newTestAgent(t, "dedicated", runtime)
 	a.runHelper = func(_ context.Context, raw []byte) error {
 		var request map[string]any

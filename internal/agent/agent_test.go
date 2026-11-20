@@ -700,7 +700,7 @@ func TestReleaseTerminatesOnlyTinyDeskAndNeverRebootsWhileLocalUsersRemain(t *te
 	if len(*calls) != 1 || (*calls)[0]["sessionId"] != "rdp-1" || (*calls)[0]["operation"] != "terminate-session" {
 		t.Fatalf("only the labuser X11 session may be terminated: %#v", *calls)
 	}
-	if (*calls)[0]["sessionRemote"] != "no" || (*calls)[0]["sessionSeat"] != "" || (*calls)[0]["forceSession"] != true {
+	if (*calls)[0]["sessionRemote"] != "no" || (*calls)[0]["sessionSeat"] != "" || (*calls)[0]["forceSession"] != true || (*calls)[0]["terminateOnCloseFailure"] != true {
 		t.Fatalf("release did not preserve the seatless XRDP identity reported by logind: %#v", *calls)
 	}
 	if (*calls)[0]["closeTimeoutSeconds"] != float64(10) {

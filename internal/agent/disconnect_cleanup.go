@@ -11,7 +11,8 @@ import (
 )
 
 const reservationDisconnectCloseGrace = time.Duration(tinyDeskDisconnectGraceSeconds) * time.Second
-const reservationDisconnectCloseRetry = 10 * time.Second
+const reservationDisconnectCloseRetry = 25 * time.Second
+const reservationDisconnectCloseMaxAttempts = 2
 
 type reservationDisconnectIdentity struct {
 	ReservationKey string `json:"reservationKey"`
@@ -23,6 +24,7 @@ type reservationDisconnectIdentity struct {
 type reservationDisconnectWatch struct {
 	reservationDisconnectIdentity
 	DisconnectedAt string `json:"disconnectedAt"`
+	AttemptCount   int    `json:"attemptCount,omitempty"`
 	LastAttemptAt  string `json:"lastAttemptAt,omitempty"`
 }
 
@@ -126,19 +128,23 @@ func (a *Agent) enforceReservationDisconnectClose(ctx context.Context) error {
 	if now.Sub(disconnectedAt) < reservationDisconnectCloseGrace {
 		return nil
 	}
-	if watch.LastAttemptAt != "" {
+	if watch.AttemptCount >= reservationDisconnectCloseMaxAttempts {
+		return nil
+	}
+	if watch.AttemptCount > 0 && watch.LastAttemptAt != "" {
 		lastAttemptAt, parseErr := parseUTC(watch.LastAttemptAt)
 		if parseErr == nil && now.Sub(lastAttemptAt) < reservationDisconnectCloseRetry {
 			return nil
 		}
 	}
+	watch.AttemptCount++
 	watch.LastAttemptAt = now.Format(time.RFC3339Nano)
 	if err := saveReservationDisconnectWatch(a.Config.StateDir, watch); err != nil {
 		return err
 	}
 
 	closeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	closeErr := a.helper(closeCtx, helperSessionRequest(tinyDeskSessions[0], true, a.Config.Application.CloseTimeoutSeconds))
+	closeErr := a.helper(closeCtx, helperSessionRequest(tinyDeskSessions[0], true, a.Config.Application.CloseTimeoutSeconds, false))
 	cancel()
 	_, remainingRemote, sessionsKnown := a.hostRuntime().Sessions()
 	if !sessionsKnown {
@@ -213,6 +219,23 @@ func loadReservationDisconnectWatch(stateDir string) (*reservationDisconnectWatc
 	}
 	if watch.ReservationKey == "" || watch.LabID == "" || watch.LeaseID == "" || watch.Generation == 0 || watch.DisconnectedAt == "" {
 		return nil, errors.New("reservation disconnect watch identity is invalid")
+	}
+	// Older daemon versions persisted the first attempt timestamp without a
+	// counter. Treat that record as an already-started attempt so an upgrade
+	// cannot restart the local retry sequence from zero.
+	if watch.AttemptCount == 0 && watch.LastAttemptAt != "" {
+		watch.AttemptCount = 1
+	}
+	if watch.AttemptCount < 0 || watch.AttemptCount > reservationDisconnectCloseMaxAttempts {
+		return nil, errors.New("reservation disconnect watch attempt count is invalid")
+	}
+	if watch.AttemptCount > 0 {
+		if watch.LastAttemptAt == "" {
+			return nil, errors.New("reservation disconnect watch attempt timestamp is missing")
+		}
+		if _, err := parseUTC(watch.LastAttemptAt); err != nil {
+			return nil, errors.New("reservation disconnect watch attempt timestamp is invalid")
+		}
 	}
 	return &watch, nil
 }

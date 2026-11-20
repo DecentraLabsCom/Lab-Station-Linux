@@ -44,13 +44,14 @@ type leaseRecord struct {
 }
 
 type leaseOperation struct {
-	PayloadHash string  `json:"payloadHash"`
-	State       string  `json:"state"`
-	Command     string  `json:"command"`
-	LeaseID     string  `json:"leaseId,omitempty"`
-	Generation  uint64  `json:"generation,omitempty"`
-	UpdatedAt   string  `json:"updatedAt"`
-	Result      *Result `json:"result,omitempty"`
+	PayloadHash            string  `json:"payloadHash"`
+	State                  string  `json:"state"`
+	Command                string  `json:"command"`
+	LeaseID                string  `json:"leaseId,omitempty"`
+	Generation             uint64  `json:"generation,omitempty"`
+	RequireRDPDisconnected bool    `json:"requireRdpDisconnected,omitempty"`
+	UpdatedAt              string  `json:"updatedAt"`
+	Result                 *Result `json:"result,omitempty"`
 }
 
 type leaseState struct {
@@ -213,7 +214,15 @@ func (a *Agent) executeLeaseRequest(parent context.Context, request Request) Res
 		state.Active.State = "releasing"
 		state.Active.UpdatedAt = now.Format(time.RFC3339Nano)
 	}
-	state.Operations[request.ID] = leaseOperation{PayloadHash: payloadHash, State: "processing", Command: request.Command, LeaseID: lease.LeaseID, Generation: generation, UpdatedAt: now.Format(time.RFC3339Nano)}
+	state.Operations[request.ID] = leaseOperation{
+		PayloadHash:            payloadHash,
+		State:                  "processing",
+		Command:                request.Command,
+		LeaseID:                lease.LeaseID,
+		Generation:             generation,
+		RequireRDPDisconnected: requestRequiresRDPDisconnected(request),
+		UpdatedAt:              now.Format(time.RFC3339Nano),
+	}
 	if err := saveLeaseState(a.Config.StateDir, state); err != nil {
 		return leaseErrorResult(request, "STATION_JOURNAL_UNAVAILABLE", "operation could not be started")
 	}
@@ -390,7 +399,25 @@ func (a *Agent) executeOperatorRelease(ctx context.Context, request Request) Res
 }
 
 func newLeaseOperation(request Request, hash string, result Result, generation uint64) leaseOperation {
-	return leaseOperation{PayloadHash: hash, State: "completed", Command: request.Command, LeaseID: request.Context.LeaseID, Generation: generation, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano), Result: &result}
+	return leaseOperation{
+		PayloadHash:            hash,
+		State:                  "completed",
+		Command:                request.Command,
+		LeaseID:                request.Context.LeaseID,
+		Generation:             generation,
+		RequireRDPDisconnected: requestRequiresRDPDisconnected(request),
+		UpdatedAt:              time.Now().UTC().Format(time.RFC3339Nano),
+		Result:                 &result,
+	}
+}
+
+func requestRequiresRDPDisconnected(request Request) bool {
+	for _, arg := range request.Args {
+		if arg == "--require-rdp-disconnected" {
+			return true
+		}
+	}
+	return false
 }
 
 func leaseSuccessResult(request Request, generation uint64, state string) Result {
@@ -717,7 +744,7 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 		ID:            operationID,
 		Operation:     "execute",
 		Command:       "release-session",
-		Args:          []string{"--protect-local-sessions"},
+		Args:          leaseExpiryReleaseArgs(state, active, now, expiresAt),
 		IssuedAt:      issuedAt.Format(time.RFC3339Nano),
 		ExecuteBefore: issuedAt.Add(5 * time.Minute).Format(time.RFC3339Nano),
 		Context: &LeaseContext{
@@ -892,6 +919,19 @@ func leaseHasOnlyRetryableReleaseFailures(state leaseState, active leaseRecord) 
 		found = true
 	}
 	return found
+}
+
+func leaseExpiryReleaseArgs(state leaseState, active leaseRecord, now, expiresAt time.Time) []string {
+	args := []string{"--protect-local-sessions"}
+	if now.Before(expiresAt) {
+		for _, operation := range state.Operations {
+			if operation.LeaseID == active.LeaseID && operation.Generation == active.Generation &&
+				operation.Command == "release-session" && operation.RequireRDPDisconnected {
+				return append(args, "--require-rdp-disconnected")
+			}
+		}
+	}
+	return args
 }
 
 func markLeaseExpiryReconciliationRequired(state *leaseState, active leaseRecord, reason string) {

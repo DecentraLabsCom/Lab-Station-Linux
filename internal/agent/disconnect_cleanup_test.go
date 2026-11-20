@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -60,8 +62,8 @@ func TestReservationDisconnectCleanupWaitsForGraceAndRecordsClose(t *testing.T) 
 	if len(baseRuntime.remote) != 0 {
 		t.Fatalf("disconnect cleanup closed apps but left the XRDP desktop session active: %#v", baseRuntime.remote)
 	}
-	if (*calls)[0]["forceSession"] != true || (*calls)[0]["closeTimeoutSeconds"] != float64(10) {
-		t.Fatalf("disconnect cleanup did not request orderly app close followed by XRDP session termination: %#v", *calls)
+	if (*calls)[0]["forceSession"] != true || (*calls)[0]["closeTimeoutSeconds"] != float64(10) || (*calls)[0]["terminateOnCloseFailure"] != false {
+		t.Fatalf("disconnect cleanup did not defer forced XRDP termination after an unsuccessful orderly close: %#v", *calls)
 	}
 	status := a.reservationDisconnectCloseStatus()
 	if status["success"] != true || status["method"] != "station-controlled" || status["reservationKey"] != "reservation-1" {
@@ -70,6 +72,45 @@ func TestReservationDisconnectCleanupWaitsForGraceAndRecordsClose(t *testing.T) 
 	watch, err = loadReservationDisconnectWatch(a.Config.StateDir)
 	if err != nil || watch != nil {
 		t.Fatalf("disconnect watch was not cleared after close: watch=%+v err=%v", watch, err)
+	}
+}
+
+func TestReservationDisconnectCleanupLeavesXRDPForGatewayWhenLocalCloseFails(t *testing.T) {
+	baseRuntime := &fakeRuntime{
+		remote:     []map[string]any{{"id": "rdp-1", "user": "labuser", "type": "x11", "remote": true}},
+		sessionsOK: true,
+	}
+	a, calls := newTestAgent(t, "dedicated", baseRuntime)
+	a.Runtime = disconnectCleanupRuntime{fakeRuntime: baseRuntime, stateKnown: true}
+	writeDisconnectCleanupLease(t, a, time.Now().UTC().Add(time.Hour))
+	if err := saveReservationDisconnectWatch(a.Config.StateDir, &reservationDisconnectWatch{
+		reservationDisconnectIdentity: reservationDisconnectIdentity{
+			ReservationKey: "reservation-1", LabID: "42", LeaseID: "lease-1", Generation: 1,
+		},
+		DisconnectedAt: time.Now().UTC().Add(-reservationDisconnectCloseGrace).Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.runHelper = func(_ context.Context, raw []byte) error {
+		var request map[string]any
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return err
+		}
+		*calls = append(*calls, request)
+		return errors.New("simulated Tiny Desk close failure")
+	}
+
+	if err := a.enforceReservationDisconnectClose(context.Background()); err == nil {
+		t.Fatal("local disconnect cleanup reported success after the helper failed")
+	}
+	if len(baseRuntime.remote) != 1 || len(*calls) != 1 || (*calls)[0]["terminateOnCloseFailure"] != false {
+		t.Fatalf("local failure did not preserve the disconnected XRDP session for Gateway: sessions=%#v calls=%#v", baseRuntime.remote, *calls)
+	}
+	if status := a.reservationDisconnectCloseStatus(); status["success"] == true {
+		t.Fatalf("failed local close was reported as completed: %#v", status)
+	}
+	if watch, err := loadReservationDisconnectWatch(a.Config.StateDir); err != nil || watch == nil {
+		t.Fatalf("failed local close did not remain retryable: watch=%+v err=%v", watch, err)
 	}
 }
 
@@ -169,6 +210,9 @@ func TestExpiredDisconnectedReservationIsReleasedByWatchdogIncludingXRDPDesktop(
 	}
 	if len(*calls) != 1 || (*calls)[0]["operation"] != "terminate-session" || (*calls)[0]["sessionId"] != "rdp-1" {
 		t.Fatalf("scheduled expiry did not terminate the complete XRDP desktop session: %#v", *calls)
+	}
+	if (*calls)[0]["terminateOnCloseFailure"] != true {
+		t.Fatalf("scheduled release did not retain forced session termination as its final cleanup step: %#v", *calls)
 	}
 	if len(baseRuntime.remote) != 0 {
 		t.Fatalf("reservation expiry left the XRDP desktop session behind: %#v", baseRuntime.remote)

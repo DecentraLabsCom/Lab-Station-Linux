@@ -21,21 +21,22 @@ import (
 )
 
 type request struct {
-	Operation           string `json:"operation"`
-	SessionID           string `json:"sessionId"`
-	Unit                string `json:"unit"`
-	Action              string `json:"action"`
-	SecretID            string `json:"secretId"`
-	SecretValue         string `json:"secretValue"`
-	Message             string `json:"message"`
-	TimeoutSeconds      int    `json:"timeoutSeconds"`
-	SessionUser         string `json:"sessionUser"`
-	SessionRemote       string `json:"sessionRemote"`
-	SessionSeat         string `json:"sessionSeat"`
-	SessionType         string `json:"sessionType"`
-	ForceSession        bool   `json:"forceSession"`
-	CloseTimeoutSeconds int    `json:"closeTimeoutSeconds,omitempty"`
-	StateDir            string `json:"stateDir"`
+	Operation               string `json:"operation"`
+	SessionID               string `json:"sessionId"`
+	Unit                    string `json:"unit"`
+	Action                  string `json:"action"`
+	SecretID                string `json:"secretId"`
+	SecretValue             string `json:"secretValue"`
+	Message                 string `json:"message"`
+	TimeoutSeconds          int    `json:"timeoutSeconds"`
+	SessionUser             string `json:"sessionUser"`
+	SessionRemote           string `json:"sessionRemote"`
+	SessionSeat             string `json:"sessionSeat"`
+	SessionType             string `json:"sessionType"`
+	ForceSession            bool   `json:"forceSession"`
+	TerminateOnCloseFailure bool   `json:"terminateOnCloseFailure"`
+	CloseTimeoutSeconds     int    `json:"closeTimeoutSeconds,omitempty"`
+	StateDir                string `json:"stateDir"`
 }
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
@@ -213,6 +214,9 @@ func executeWithContext(ctx context.Context, request request) error {
 		values, err = readSessionIdentity(ctx, request.SessionID)
 		if err != nil || !sameSessionIdentity(values, request) {
 			return errors.New("session identity changed before termination")
+		}
+		if request.TerminateOnCloseFailure && !request.ForceSession {
+			return errors.New("session termination fallback requires managed Tiny Desk close")
 		}
 		if request.ForceSession {
 			if !isTinyDeskSession(request.SessionUser, request.SessionRemote, request.SessionSeat, request.SessionType) {

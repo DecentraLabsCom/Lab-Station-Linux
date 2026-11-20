@@ -15,7 +15,7 @@ const (
 	defaultXrdpSessionPath                  = "/sbin:/bin:/usr/bin:/usr/local/bin"
 	xrdpOriginalXorgKey                     = "LABSTATION_XORG_EXEC"
 	tinyDeskDisconnectGraceSeconds          = 120
-	tinyDeskDisconnectedSessionLimitSeconds = 180
+	tinyDeskDisconnectedSessionLimitSeconds = 240
 )
 
 func xrdpIDExecutable() (string, error) {

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+- Make reservation disconnect cleanup match Windows: one local Tiny Desk
+  close retry 25 seconds after the first attempt, while keeping XRDP available
+  for Gateway's 180-second `release-session` fallback if both attempts fail.
+
 ## [0.7.0] - 2026-11-19
 
 ### Added
@@ -9,8 +14,9 @@
   reconnect window; after expiry, close managed applications and the desktop
   session in order, then report completion with the reservation and lease
   identity to Ops Worker.
-- Apply a 180-second XRDP disconnected-session limit as the host-wide fallback
-  if ordered cleanup does not finish.
+- Keep disconnected XRDP sessions available for 240 seconds, allowing the
+  Gateway's 180-second `release-session` retry to request orderly Tiny Desk
+  cleanup before the operating-system fallback.
 
 ## [0.6.0] - 2026-11-17
 

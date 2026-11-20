@@ -221,10 +221,12 @@ seconds. Existing configuration values above 10 remain accepted but are capped
 at runtime. The `wmctrl` package is required for X11 window-close requests; if
 it is missing or an app window cannot be matched to its process group, the
 launcher falls back to process signals.
-If the session's application supervisor cannot be identified, the privileged
-helper revalidates the XRDP session and uses logind's session termination as
-the final fallback. This behavior applies to managed XRDP/Xorg Tiny Desk
-sessions, not Wayland desktops.
+For a commanded Release, if the session's application supervisor cannot be
+identified, the privileged helper revalidates the XRDP session and uses
+logind's session termination as the final fallback. During the local
+disconnect grace, that forced fallback is deferred so Gateway can retry it.
+This behavior applies to managed XRDP/Xorg Tiny Desk sessions, not Wayland
+desktops.
 
 Closing the browser or Guacamole tunnel disconnects, but does not immediately
 release, the XRDP session. During a reservation, the agent keeps Tiny Desk
@@ -232,9 +234,18 @@ available for 120 seconds. A reconnect within that window resumes the same
 desktop and leaves its applications running. If it remains disconnected, the
 agent requests the controlled Tiny Desk close, waits for the session to end,
 and publishes `reservationDisconnectClose` with the reservation and lease
-identity. Ops Worker waits for that status before running reservation end energy
-phases. XRDP's 180-second disconnected-session limit is a host-wide hard fallback
-for all `xorgxrdp` sessions.
+identity. If the first local attempt fails, Station keeps the disconnected
+XRDP session and makes one retry 25 seconds after that attempt began (normally
+about 145 seconds after disconnect). Ops Worker waits for a successful status
+before running reservation end energy phases. If the retry also fails or the
+status is still missing, Gateway can run the matching `release-session` after
+180 seconds; that retry uses the same controlled Tiny Desk close and can
+terminate the desktop if its orderly close still fails. If Station already
+closed the desktop but failed to report it, Gateway rechecks the session and
+its release remains safe to repeat.
+XRDP's 240-second
+disconnected-session limit is a host-wide hard fallback for all `xorgxrdp`
+sessions, leaving time for the Gateway retry to run first.
 
 This local 120-second grace does not clear a Gateway reservation lease, release
 energy policies, or stop an FMU. Reservation end still follows the matching
@@ -418,12 +429,13 @@ sudo labstationctl energy audit
 sudo labstationctl recovery reboot-if-needed
 ```
 
-Gateway shutdown requests use `power shutdown --delay=60 --require-idle`. Windows
+Gateway shutdown requests use `power shutdown --delay=0 --require-idle`. Windows
 and Linux Stations follow the same guard: the Gateway checks the advertised
 capability, local mode, and session inventory before dispatch; the Station
-checks local mode and sessions before and after the countdown. It cancels
-shutdown if local mode is enabled, the inventory is unavailable, or a user
-session is active at either check.
+checks local mode and sessions before powering off. It cancels shutdown if
+local mode is enabled, the inventory is unavailable, or a user session is
+active at either check. When a command requests a nonzero delay, the Station
+checks again when that delay ends.
 
 If Gateway reports a host-key mismatch, stop remote actions and compare the
 fingerprint through the trusted console before changing the pin. If the outcome

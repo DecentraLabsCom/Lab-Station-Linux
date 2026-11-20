@@ -129,7 +129,7 @@ exit 4
 
 	err := execute(request{
 		Operation: "terminate-session", SessionID: "rdp-7", SessionUser: "labuser",
-		SessionRemote: "yes", SessionType: "x11", ForceSession: true,
+		SessionRemote: "yes", SessionType: "x11", ForceSession: true, TerminateOnCloseFailure: true,
 		CloseTimeoutSeconds: 1,
 	})
 	if err != nil {
@@ -137,6 +137,43 @@ exit 4
 	}
 	if _, err := os.Stat(forced); err != nil {
 		t.Fatalf("missing supervisor did not reach logind cleanup: %v", err)
+	}
+}
+
+func TestTinyDeskCloseLeavesSessionForGatewayWhenOrderlyCloseFails(t *testing.T) {
+	root := t.TempDir()
+	procRoot := filepath.Join(root, "proc")
+	if err := os.Mkdir(procRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	forced := filepath.Join(root, "session-forced")
+	loginctl := filepath.Join(root, "loginctl")
+	script := `#!/bin/sh
+if [ "$1" = "show-session" ]; then
+  printf 'Name=labuser\nRemote=yes\nSeat=\nType=x11\nScope=session-rdp-7.scope\n'
+  exit 0
+fi
+if [ "$1" = "terminate-session" ]; then touch "$TEST_SESSION_FORCED"; exit 0; fi
+exit 4
+`
+	writeExecutable(t, loginctl, script)
+	oldLoginctl, oldProcRoot, oldLookup := loginctlBinary, procfsRoot, lookupLabuserUID
+	loginctlBinary = loginctl
+	procfsRoot = procRoot
+	lookupLabuserUID = func() (uint32, error) { return 1002, nil }
+	t.Cleanup(func() { loginctlBinary, procfsRoot, lookupLabuserUID = oldLoginctl, oldProcRoot, oldLookup })
+	t.Setenv("TEST_SESSION_FORCED", forced)
+
+	err := execute(request{
+		Operation: "terminate-session", SessionID: "rdp-7", SessionUser: "labuser",
+		SessionRemote: "yes", SessionType: "x11", ForceSession: true,
+		TerminateOnCloseFailure: false, CloseTimeoutSeconds: 1,
+	})
+	if err == nil {
+		t.Fatal("an unsuccessful local orderly close should leave the Tiny Desk session for Gateway")
+	}
+	if _, err := os.Stat(forced); err == nil {
+		t.Fatal("local disconnect cleanup terminated XRDP before Gateway's release-session retry")
 	}
 }
 
@@ -166,7 +203,7 @@ exit 4
 
 	err := execute(request{
 		Operation: "terminate-session", SessionID: "rdp-7", SessionUser: "labuser",
-		SessionRemote: "no", SessionSeat: "", SessionType: "x11", ForceSession: true,
+		SessionRemote: "no", SessionSeat: "", SessionType: "x11", ForceSession: true, TerminateOnCloseFailure: true,
 		CloseTimeoutSeconds: 1,
 	})
 	if err != nil {

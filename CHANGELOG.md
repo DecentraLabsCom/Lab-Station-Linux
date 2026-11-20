@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-20
+
 ### Changed
 - Make reservation disconnect cleanup match Windows: one local Tiny Desk
   close retry 25 seconds after the first attempt, while keeping XRDP available

@@ -961,6 +961,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 			return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED", "retryable": false}
 		}
 	}
+	localTerminationRetryable := false
 	terminated, closedLocal, closeFailureCode, closeFailure := func() (int, int, string, string) {
 		a.disconnectMu.Lock()
 		defer a.disconnectMu.Unlock()
@@ -1010,6 +1011,19 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 					continue
 				}
 				if err := a.helper(ctx, helperSessionRequest(session, false, 0, false)); err != nil {
+					latestLocal, _, latestKnown = a.hostRuntime().Sessions()
+					if !latestKnown {
+						return closed, closedLocalSessions, "STATION_SESSION_QUERY_FAILED", "session inventory became unavailable after local session release"
+					}
+					latestTargets = dedicatedLocalReleaseTargets(latestLocal)
+					if !sameSessionSnapshot(localTargets, latestTargets) {
+						return closed, closedLocalSessions, "STATION_SESSION_CHANGED", "local session inventory changed during Release"
+					}
+					if !sessionSnapshotContainsID(latestTargets, fmt.Sprint(session["id"])) {
+						closedLocalSessions++
+						continue
+					}
+					localTerminationRetryable = true
 					return closed, closedLocalSessions, "STATION_SESSION_TERMINATION_FAILED", "unable to close local session: " + err.Error()
 				}
 				closedLocalSessions++
@@ -1023,6 +1037,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 				return closed, closedLocalSessions, "STATION_SESSION_CHANGED", "local session inventory changed during Release"
 			}
 			if len(remainingTargets) > 0 {
+				localTerminationRetryable = true
 				return closed, closedLocalSessions, "STATION_SESSION_TERMINATION_FAILED", "a local non-LABUSER session remains active after Release"
 			}
 		}
@@ -1032,7 +1047,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 		retryable := closeFailureCode == "STATION_RDP_CLIENT_STATE_UNKNOWN" ||
 			closeFailureCode == "STATION_SESSION_QUERY_FAILED" ||
 			closeFailureCode == "STATION_SESSION_CHANGED" ||
-			closeFailureCode == "STATION_SESSION_TERMINATION_FAILED" ||
+			(closeFailureCode == "STATION_SESSION_TERMINATION_FAILED" && localTerminationRetryable) ||
 			closeFailureCode == "STATION_RELEASE_PROTECTED_SESSION_ACTIVE"
 		return 2, "", closeFailure, map[string]any{
 			"code": closeFailureCode, "retryable": retryable,

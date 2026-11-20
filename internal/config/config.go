@@ -49,7 +49,7 @@ type Config struct {
 
 func Defaults() Config {
 	return Config{
-		Name: "", Profile: "dedicated", Version: "0.8.0",
+		Name: "", Profile: "dedicated", Version: "0.8.1",
 		StateDir:       "/var/lib/decentralabs/lab-station/data",
 		ConfigDir:      "/etc/decentralabs/lab-station",
 		LogDir:         "/var/log/decentralabs/lab-station",

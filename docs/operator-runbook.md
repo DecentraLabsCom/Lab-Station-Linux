@@ -156,10 +156,12 @@ commands must carry their matching lease context. The Lab Manager operator
 Release action follows the same no-active-lease rule. It is also refused while
 any remote `labuser` session exists, even without a Station lease, because the
 Station cannot prove that session is unreserved; the refusal runs no FMU
-cleanup. A matching reservation-bound Release closes its managed Tiny Desk X11
-session, then restarts an installed FMU Executor to terminate all its sessions
-and clear temporary state. It preserves the local console session, but this
-service-wide FMU cleanup can interrupt work from that session. FMU cleanup
+cleanup. Matching Dedicated reservation Release closes active local non-`labuser`
+seat sessions as well as its managed Tiny Desk X11 session, then restarts an
+installed FMU Executor to terminate all its sessions and clear temporary state.
+Administrative Dedicated Release closes the local non-`labuser` seat sessions
+when allowed by the existing lease and remote-session protections. A local
+`labuser` session remains signed in. Hybrid Release preserves local sessions. FMU cleanup
 failure makes Release fail. logind may report the seatless
 `labuser` XRDP session as `Remote=no`; Lab Station still recognizes it as Tiny
 Desk. Seat-bound sessions remain under the local-session safety policy. Both
@@ -382,10 +384,13 @@ safely without terminating a local session; Windows uses the equivalent
 `AllowLocalSessionEviction=false` entry in `labstation/data/station-profile.ini`.
 Hybrid `--no-guard` is an explicit administrative bypass. Dedicated always
 shows its warning and observes the grace period, including when a silent or
-bypass option is supplied. Release closes only the managed remote `labuser`
-session and preserves the local console session, then restarts an installed
-FMU Executor and clears temporary data. This service-wide cleanup can interrupt
-local FMU work. Release is rejected while a reservation or demo lease is active
+bypass option is supplied. Matching Dedicated reservation Release closes
+active local non-`labuser` seat sessions and the managed remote `labuser`
+session. Administrative Dedicated Release closes the local non-`labuser` seat
+sessions when allowed by the existing lease and remote-session protections. A
+local `labuser` session remains signed in. Hybrid Release preserves local sessions. Release then
+restarts an installed FMU Executor and clears temporary data. This service-wide
+cleanup can interrupt local FMU work. Release is rejected while a reservation or demo lease is active
 and is also blocked while any remote `labuser` session is present without a
 lease, because that session may belong to a reservation whose lease is missing.
 Prepare protects a remote `labuser` session when an associated reservation is

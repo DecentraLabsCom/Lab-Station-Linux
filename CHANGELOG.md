@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-21
+
+### Fixed
+- Dedicated release logs off active local non-LABUSER seat sessions for both
+  reservation-bound and administrative Release while preserving local LABUSER.
+
 ## [0.8.0] - 2026-11-20
 
 ### Changed

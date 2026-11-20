@@ -822,6 +822,25 @@ func joinSessionTargets(localSessions, remoteSessions []map[string]any) []map[st
 	return targets
 }
 
+func dedicatedLocalReleaseTargets(sessions []map[string]any) []map[string]any {
+	targets := make([]map[string]any, 0, len(sessions))
+	for _, session := range sessions {
+		if session["kind"] != "local" {
+			continue
+		}
+		if active, ok := session["active"].(bool); ok && !active {
+			continue
+		}
+		user, _ := session["user"].(string)
+		user = strings.TrimSpace(user)
+		if user == "" || strings.EqualFold(user, "labuser") {
+			continue
+		}
+		targets = append(targets, session)
+	}
+	return targets
+}
+
 func isTinyDeskRemoteSession(session map[string]any) bool {
 	if !strings.EqualFold(fmt.Sprint(session["user"]), "labuser") || !strings.EqualFold(fmt.Sprint(session["type"]), "x11") {
 		return false
@@ -942,46 +961,83 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 			return 2, "", "an RDP client reconnected; automatic session release was cancelled", map[string]any{"code": "STATION_RDP_CLIENT_CONNECTED", "retryable": false}
 		}
 	}
-	terminated, closeFailureCode, closeFailure := func() (int, string, string) {
+	terminated, closedLocal, closeFailureCode, closeFailure := func() (int, int, string, string) {
 		a.disconnectMu.Lock()
 		defer a.disconnectMu.Unlock()
 
 		currentLocal, currentRemote, currentKnown := a.hostRuntime().Sessions()
 		if !currentKnown {
-			return 0, "STATION_SESSION_QUERY_FAILED", "session inventory became unavailable before Tiny Desk close"
+			return 0, 0, "STATION_SESSION_QUERY_FAILED", "session inventory became unavailable before session release"
 		}
 		if protectLocalSessions {
 			if a.localModeEnabled() {
-				return 0, "STATION_LOCAL_MODE_ACTIVE", "local mode became active before automatic session release"
+				return 0, 0, "STATION_LOCAL_MODE_ACTIVE", "local mode became active before automatic session release"
 			}
 			if safe, reason := expiredLeaseSessionSafety(a.Config.Profile, currentLocal, currentRemote); !safe {
-				return 0, "STATION_RELEASE_PROTECTED_SESSION_ACTIVE", "automatic Release was deferred: " + reason
+				return 0, 0, "STATION_RELEASE_PROTECTED_SESSION_ACTIVE", "automatic Release was deferred: " + reason
 			}
 		}
 		closed := 0
+		closedLocalSessions := 0
 		for _, session := range currentRemote {
 			if !isTinyDeskRemoteSession(session) {
 				continue
 			}
 			if requireRDPDisconnected {
 				if connected, known := a.hostRuntime().RDPClientsConnected(); !known {
-					return closed, "STATION_RDP_CLIENT_STATE_UNKNOWN", "RDP connection state is unavailable; refusing automatic session release"
+					return closed, closedLocalSessions, "STATION_RDP_CLIENT_STATE_UNKNOWN", "RDP connection state is unavailable; refusing automatic session release"
 				} else if connected {
-					return closed, "STATION_RDP_CLIENT_CONNECTED", "an RDP client reconnected; automatic session release was cancelled"
+					return closed, closedLocalSessions, "STATION_RDP_CLIENT_CONNECTED", "an RDP client reconnected; automatic session release was cancelled"
 				}
 			}
 			if err := a.helper(ctx, helperSessionRequest(session, true, a.Config.Application.CloseTimeoutSeconds, true)); err != nil {
-				return closed, "STATION_SESSION_TERMINATION_FAILED", "unable to close Tiny Desk session: " + err.Error()
+				return closed, closedLocalSessions, "STATION_SESSION_TERMINATION_FAILED", "unable to close Tiny Desk session: " + err.Error()
 			}
 			closed++
 		}
-		return closed, "", ""
+		if a.Config.Profile == "dedicated" {
+			localTargets := dedicatedLocalReleaseTargets(currentLocal)
+			for _, session := range localTargets {
+				latestLocal, _, latestKnown := a.hostRuntime().Sessions()
+				if !latestKnown {
+					return closed, closedLocalSessions, "STATION_SESSION_QUERY_FAILED", "session inventory became unavailable before local session release"
+				}
+				latestTargets := dedicatedLocalReleaseTargets(latestLocal)
+				if !sameSessionSnapshot(localTargets, latestTargets) {
+					return closed, closedLocalSessions, "STATION_SESSION_CHANGED", "local session inventory changed during Release"
+				}
+				if !sessionSnapshotContainsID(latestTargets, fmt.Sprint(session["id"])) {
+					continue
+				}
+				if err := a.helper(ctx, helperSessionRequest(session, false, 0, false)); err != nil {
+					return closed, closedLocalSessions, "STATION_SESSION_TERMINATION_FAILED", "unable to close local session: " + err.Error()
+				}
+				closedLocalSessions++
+			}
+			remainingLocal, _, remainingKnown := a.hostRuntime().Sessions()
+			if !remainingKnown {
+				return closed, closedLocalSessions, "STATION_SESSION_QUERY_FAILED", "session inventory became unavailable after local session release"
+			}
+			remainingTargets := dedicatedLocalReleaseTargets(remainingLocal)
+			if !sameSessionSnapshot(localTargets, remainingTargets) {
+				return closed, closedLocalSessions, "STATION_SESSION_CHANGED", "local session inventory changed during Release"
+			}
+			if len(remainingTargets) > 0 {
+				return closed, closedLocalSessions, "STATION_SESSION_TERMINATION_FAILED", "a local non-LABUSER session remains active after Release"
+			}
+		}
+		return closed, closedLocalSessions, "", ""
 	}()
 	if closeFailure != "" {
 		retryable := closeFailureCode == "STATION_RDP_CLIENT_STATE_UNKNOWN" ||
 			closeFailureCode == "STATION_SESSION_QUERY_FAILED" ||
+			closeFailureCode == "STATION_SESSION_CHANGED" ||
+			closeFailureCode == "STATION_SESSION_TERMINATION_FAILED" ||
 			closeFailureCode == "STATION_RELEASE_PROTECTED_SESSION_ACTIVE"
-		return 2, "", closeFailure, map[string]any{"code": closeFailureCode, "retryable": retryable}
+		return 2, "", closeFailure, map[string]any{
+			"code": closeFailureCode, "retryable": retryable,
+			"closedLabuserSessions": terminated, "closedLocalSessions": closedLocal,
+		}
 	}
 	rebootScheduled := false
 	rebootDeferred := false
@@ -992,6 +1048,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 		metadata := map[string]any{
 			"profile":               a.Config.Profile,
 			"closedLabuserSessions": terminated,
+			"closedLocalSessions":   closedLocal,
 			"fmuCleanupAttempted":   fmuCleanupAttempted,
 			"fmuCleanupCompleted":   fmuCleanupCompleted,
 			"retryable":             false,
@@ -1012,6 +1069,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 			"kind":                  "release-session",
 			"timestamp":             time.Now().UTC().Format(time.RFC3339Nano),
 			"closedLabuserSessions": terminated,
+			"closedLocalSessions":   closedLocal,
 			"fmuCleanupAttempted":   fmuCleanupAttempted,
 			"fmuCleanupCompleted":   fmuCleanupCompleted,
 			"retryable":             false,

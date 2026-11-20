@@ -814,7 +814,8 @@ func validStoredLease(active leaseRecord) bool {
 func expiredLeaseSessionSafety(profile string, local, remote []map[string]any) (bool, string) {
 	for _, session := range local {
 		user, _ := session["user"].(string)
-		if profile == "hybrid" || !strings.EqualFold(strings.TrimSpace(user), "labuser") {
+		user = strings.TrimSpace(user)
+		if profile == "hybrid" || profile != "dedicated" || user == "" {
 			return false, "a protected local session is active"
 		}
 	}

@@ -26,17 +26,20 @@ The normalized profiles have the same operator meaning on Windows and Linux:
 
 | Profile | Prepare / Release | Enable Local |
 | --- | --- | --- |
-| `dedicated` | Supported for the physical lab. Prepare requires a known session inventory. Administrative Prepare may hand off a remote LABUSER session only when Gateway confirms no active/imminent reservation for mapped labs. Reservation-bound Prepare may hand it off when the incoming reservation is the only active/imminent mapped-lab reservation and has no prior access-session evidence. Dedicated warns, waits through the configured grace period, and logs off eligible local and authorized remote sessions without asking for confirmation. If any warning cannot be sent, Prepare fails before logoff. | Not available. Disable remains available only to clear an already active stale flag. |
-| `hybrid` | Supported for the physical lab. Prepare refuses active or unknown local mode and unavailable session inventory. Administrative Prepare may hand off a remote LABUSER session only when Gateway confirms no active/imminent reservation for mapped labs. Reservation-bound Prepare may hand it off when the incoming reservation is the only active/imminent mapped-lab reservation and has no prior access-session evidence. An authorized remote LABUSER session follows the same confirmation policy as a local console session. When local-session eviction is enabled, each eligible session must affirmatively acknowledge a graphical warning before eviction. The configured grace deadline starts with the first prompt, so confirmation time counts against it and any remaining interval allows voluntary sign-out. A declined, timed-out, or unavailable prompt leaves an active session open and fails Prepare before cleanup or lease activation; a session that signs out during its prompt is already released. When eviction is disabled it fails safely. Prepare also clears bounded user working data and FMU temporary state. Release closes only the managed remote lab-user session. | Supported for local on-site use when no reservation or remote lab-user session is active. It expires after eight hours by default on current Windows and Linux Stations. |
+| `dedicated` | Supported for the physical lab. Prepare requires a known session inventory. Administrative Prepare may hand off a remote LABUSER session only when Gateway confirms no active/imminent reservation for mapped labs. Reservation-bound Prepare may hand it off when the incoming reservation is the only active/imminent mapped-lab reservation and has no prior access-session evidence. Dedicated warns, waits through the configured grace period, and logs off eligible local and authorized remote sessions without asking for confirmation. If any warning cannot be sent, Prepare fails before logoff. Matching reservation Release closes active local non-LABUSER console sessions and the managed remote LABUSER session. Administrative Release closes those local sessions when allowed by the existing lease and remote-session protections. Local LABUSER console sessions remain signed in. | Not available. Disable remains available only to clear an already active stale flag. |
+| `hybrid` | Supported for the physical lab. Prepare refuses active or unknown local mode and unavailable session inventory. Administrative Prepare may hand off a remote LABUSER session only when Gateway confirms no active/imminent reservation for mapped labs. Reservation-bound Prepare may hand it off when the incoming reservation is the only active/imminent mapped-lab reservation and has no prior access-session evidence. An authorized remote LABUSER session follows the same confirmation policy as a local console session. When local-session eviction is enabled, each eligible session must affirmatively acknowledge a graphical warning before eviction. The configured grace deadline starts with the first prompt, so confirmation time counts against it and any remaining interval allows voluntary sign-out. A declined, timed-out, or unavailable prompt leaves an active session open and fails Prepare before cleanup or lease activation; a session that signs out during its prompt is already released. When eviction is disabled it fails safely. Prepare also clears bounded user working data and FMU temporary state. Release closes only the managed remote lab-user session and preserves the local console session. | Supported for local on-site use when no reservation or remote lab-user session is active. It expires after eight hours by default on current Windows and Linux Stations. |
 | `fmu-only` | Not supported. | Not supported. Disable remains available only to clear an already active stale flag. |
 
 `sessions.localSessionActive` has the same platform-neutral meaning on both
 agents: at least one interactive physical-console/seat session exists,
 regardless of the account name. It includes a local `LABUSER` session and
 excludes RDP/Tiny Desk sessions regardless of account. Dedicated uses this
-signal to warn and hand off every local session; Hybrid uses it with local-mode
-and the configured confirmation policy. If the legacy top-level field is also
-present, it must agree with the nested value.
+signal to warn and hand off every local session during Prepare, and to close
+active local non-LABUSER sessions during Release. Marketplace status ignores
+those local non-LABUSER sessions for Dedicated occupancy; local LABUSER
+sessions remain visible. Hybrid uses the signal with local-mode and the
+configured confirmation policy. If the legacy top-level field is also present,
+it must agree with the nested value.
 
 When `sessions.queryOk` is true, `sessions.remoteLabUserSessionIds` reports the
 OS session IDs for remote managed-account sessions, including disconnected
@@ -111,11 +114,10 @@ never repeats an uncertain ID. It can recover known pre-effect failures,
 partial cleanup failures, and interrupted lease-bound operations. Before each
 attempt, the Station checks that the stored lease identity is valid, local mode
 is off, and session inventory is available. Hybrid waits for local sessions;
-both profiles wait for local non-LABUSER and remote non-LABUSER sessions.
-Linux also waits if LABUSER has a remote session outside the managed Tiny Desk
-X11 session.
-Dedicated may proceed past a local LABUSER session; Release preserves the
-local console session while closing the managed remote LABUSER session.
+both profiles wait for remote non-LABUSER sessions. Dedicated Release closes
+active local non-LABUSER console sessions and the managed remote LABUSER
+session, while a local LABUSER session remains signed in. Linux also waits if
+LABUSER has a remote session outside the managed Tiny Desk X11 session.
 The Gateway's scheduled-end retry uses the same session-protection guard.
 Invalid lease identity or journal state still needs operator repair; a failed
 Prepare does not evict users or run Release before the reservation expires.

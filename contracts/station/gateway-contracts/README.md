@@ -27,13 +27,13 @@ The normalized profiles have the same operator meaning on Windows and Linux:
 | Profile | Prepare / Release | Enable Local |
 | --- | --- | --- |
 | `dedicated` | Supported for the physical lab. Prepare requires a known session inventory. Administrative Prepare may hand off a remote LABUSER session only when Gateway confirms no active/imminent reservation for mapped labs. Reservation-bound Prepare may hand it off when the incoming reservation is the only active/imminent mapped-lab reservation and has no prior access-session evidence. Dedicated warns, waits through the configured grace period, and logs off eligible local and authorized remote sessions without asking for confirmation. If any warning cannot be sent, Prepare fails before logoff. Matching reservation Release closes active local non-LABUSER console sessions and the managed remote LABUSER session. Administrative Release closes those local sessions when allowed by the existing lease and remote-session protections. Local LABUSER console sessions remain signed in. | Not available. Disable remains available only to clear an already active stale flag. |
-| `hybrid` | Supported for the physical lab. Prepare refuses active or unknown local mode and unavailable session inventory. Administrative Prepare may hand off a remote LABUSER session only when Gateway confirms no active/imminent reservation for mapped labs. Reservation-bound Prepare may hand it off when the incoming reservation is the only active/imminent mapped-lab reservation and has no prior access-session evidence. An authorized remote LABUSER session follows the same confirmation policy as a local console session. When local-session eviction is enabled, each eligible session must affirmatively acknowledge a graphical warning before eviction. The configured grace deadline starts with the first prompt, so confirmation time counts against it and any remaining interval allows voluntary sign-out. A declined, timed-out, or unavailable prompt leaves an active session open and fails Prepare before cleanup or lease activation; a session that signs out during its prompt is already released. When eviction is disabled it fails safely. Prepare also clears bounded user working data and FMU temporary state. Release closes only the managed remote lab-user session and preserves the local console session. | Supported for local on-site use when no reservation or remote lab-user session is active. It expires after eight hours by default on current Windows and Linux Stations. |
+| `hybrid` | Supported for the physical lab. Prepare refuses active or unknown local mode and unavailable session inventory. Administrative Prepare may hand off a remote LABUSER session only when Gateway confirms no active/imminent reservation for mapped labs. Reservation-bound Prepare may hand it off when the incoming reservation is the only active/imminent mapped-lab reservation and has no prior access-session evidence. An authorized remote LABUSER session follows the same confirmation policy as a local console session. When local-session eviction is enabled, each eligible session must affirmatively acknowledge a graphical warning before eviction. The configured grace deadline starts with the first prompt, so confirmation time counts against it and any remaining interval allows voluntary sign-out. A declined, timed-out, or unavailable prompt leaves an active session open and fails Prepare before cleanup or lease activation; a session that signs out during its prompt is already released. When eviction is disabled it fails safely. Prepare also clears bounded user working data and FMU temporary state. Release closes only the managed remote lab-user session and preserves the local console session. | Supported for local on-site use on Hybrid after a successful inventory confirms no remote LABUSER session and the Station has no active persisted lease. The current v3 path does not query the Gateway reservation projection, so operate outside active reservation windows. It expires after eight hours by default on current Windows and Linux Stations. |
 | `fmu-only` | Not supported. | Not supported. Disable remains available only to clear an already active stale flag. |
 
 `sessions.localSessionActive` has the same platform-neutral meaning on both
 agents: at least one interactive physical-console/seat session exists,
 regardless of the account name. It includes a local `LABUSER` session and
-excludes RDP/Tiny Desk sessions regardless of account. Dedicated uses this
+excludes Windows RemoteApp/RDP and Linux XRDP/Tiny Desk sessions regardless of account. Dedicated uses this
 signal to warn and hand off every local session during Prepare, and to close
 active local non-LABUSER sessions during Release. Marketplace status ignores
 those local non-LABUSER sessions for Dedicated occupancy; local LABUSER
@@ -67,11 +67,13 @@ hand off a residual session when its own reservation is the only active/imminent
 reservation and no access-session evidence exists for it; another active
 reservation or unknown state blocks that handoff. Administrative Release
 continues to protect every remote LABUSER session. Current Station agents also enforce the profile rules and serialize
-administrative Prepare and Release against reservation/demo leases, plus
-local-mode enable against reservation operations, so using WinRM, SSH, CLI, or
-the local command queue does not change the action's meaning. An active lease
-must be released by its reservation flow with matching context. Disabling local
-mode is allowed for cleanup even if the profile has since changed.
+administrative Prepare and Release against persisted Station leases, plus
+local-mode enable against the persisted Station lease journal. The current v3
+local-mode path does not query the Gateway reservation projection, so operators
+should use it outside active reservation windows. Using WinRM, SSH, CLI, or the
+local command queue does not change those Station-side lease guards. An active
+lease must be released by its reservation flow with matching context. Disabling
+local mode is allowed for cleanup even if the profile has since changed.
 
 Both Station agents attempt to release an active reservation lease locally
 when `expiresAt` passes, even if Gateway cannot send the normal release

@@ -356,9 +356,12 @@ modification time is not used to infer when local use began. Dedicated reports
 local mode as disabled and removes or ignores stale markers.
 
 Enable local mode only on a `hybrid` station, with a successful session
-inventory and no active reservation or remote lab-user session; it marks
-exclusive on-site use and expires after eight hours by default. `clear`
-remains available on any profile to remove a stale flag. `Prepare` and `Release`
+inventory and no remote `labuser` session. The Station also rejects an active
+persisted lease. Its v3 command does not query Gateway's authoritative
+reservation projection, so enable local mode outside active reservation
+windows. It marks exclusive on-site use and expires after eight hours by
+default. `clear` remains available on any profile to remove a stale flag.
+`Prepare` and `Release`
 are supported only for `dedicated` and `hybrid` physical stations. Dedicated
 warns every eligible local desktop session and any remote `labuser` session
 Gateway has authorized for handoff, waits the configured grace period, then

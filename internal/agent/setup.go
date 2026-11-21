@@ -703,6 +703,9 @@ func installDirectoryLayout(cfg config.Config) error {
 			return err
 		}
 	}
+	if err := ensureStationLogFile(cfg.LogDir); err != nil {
+		return err
+	}
 	events := filepath.Join(cfg.StateDir, "session-guard-events.jsonl")
 	if _, err := os.Stat(events); os.IsNotExist(err) {
 		if err := atomicWrite(events, []byte{}, 0660); err != nil {
@@ -797,6 +800,42 @@ func installAuthorizedKey(key string) error {
 	uid, gid := lookupUser("labstation-ops")
 	_ = os.Chown(sshDir, uid, gid)
 	_ = os.Chown(filepath.Join(sshDir, "authorized_keys"), uid, gid)
+	return nil
+}
+
+func ensureStationLogFile(logDir string) error {
+	path := filepath.Join(logDir, stationLogFilename)
+	daemon, err := lookupUserIDs("labstationd")
+	if err != nil {
+		return err
+	}
+	group := lookupGroup("labstation")
+	if group == 0 {
+		return errors.New("labstation group is unavailable for the station log")
+	}
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_APPEND|syscall.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0640)
+	if err != nil {
+		return fmt.Errorf("unable to prepare station log: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return errors.New("unable to wrap prepared station log")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("unable to inspect prepared station log: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("station log path must be a regular file")
+	}
+	if err := file.Chown(int(daemon.uid), group); err != nil {
+		return fmt.Errorf("unable to set station log ownership: %w", err)
+	}
+	if err := file.Chmod(0640); err != nil {
+		return fmt.Errorf("unable to set station log permissions: %w", err)
+	}
 	return nil
 }
 

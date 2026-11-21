@@ -49,14 +49,14 @@ func (a *Agent) Run(ctx context.Context) error {
 			return nil
 		case <-statusTimer.C:
 			if err := a.publish(); err != nil {
-				a.log("heartbeat-write-failed", map[string]any{"error": err.Error()})
+				a.logError("heartbeat-write-failed", map[string]any{"error": err.Error()})
 			}
 		case <-watchdogTimer.C:
 			if err := a.enforceReservationDisconnectClose(ctx); err != nil {
-				a.log("reservation-disconnect-close-error", map[string]any{"error": err.Error()})
+				a.logError("reservation-disconnect-close-error", map[string]any{"error": err.Error()})
 			}
 			if err := a.enforceLeaseExpiry(ctx); err != nil {
-				a.log("lease-watchdog-error", map[string]any{"error": err.Error()})
+				a.logError("lease-watchdog-error", map[string]any{"error": err.Error()})
 			}
 		}
 	}
@@ -200,7 +200,7 @@ func (a *Agent) runQueue(ctx context.Context) {
 			return
 		case <-timer.C:
 			if err := a.processQueue(ctx); err != nil {
-				a.log("queue-error", map[string]any{"error": err.Error()})
+				a.logError("queue-error", map[string]any{"error": err.Error()})
 			}
 		}
 	}
@@ -214,7 +214,9 @@ func (a *Agent) publish() error {
 	if err := atomicJSON(filepath.Join(a.Config.StateDir, "heartbeat.json"), status); err != nil {
 		return err
 	}
-	a.log("heartbeat-published", map[string]any{"profile": a.Config.Profile, "ready": status["summary"].(map[string]any)["ready"]})
+	ready := status["summary"].(map[string]any)["ready"].(bool)
+	a.logHeartbeatSummary(ready)
+	a.logDebug("heartbeat-published", map[string]any{"ready": ready})
 	return nil
 }
 
@@ -300,17 +302,4 @@ func (a *Agent) processQueueRequest(ctx context.Context, path, id string) Result
 
 func (a *Agent) rejected(id, message string) Result {
 	return Result{ID: id, Command: "queue", CompletedAt: time.Now().UTC().Format(time.RFC3339Nano), Success: false, ExitCode: 2, Outcome: "failure", Message: message, Stderr: message, Metadata: map[string]any{"code": "STATION_COMMAND_REJECTED"}}
-}
-
-func (a *Agent) log(event string, fields map[string]any) {
-	fields["event"] = event
-	fields["timestamp"] = time.Now().UTC().Format(time.RFC3339Nano)
-	fields["host"] = a.Config.Name
-	fields["profile"] = a.Config.Profile
-	file, err := os.OpenFile(filepath.Join(a.Config.LogDir, "labstation.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-	_ = json.NewEncoder(file).Encode(fields)
 }

@@ -1,0 +1,3 @@
+# Station structured log and its daily compressed archives
+labstation.log
+labstation-*.log*

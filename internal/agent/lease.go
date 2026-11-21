@@ -663,7 +663,7 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 			return err
 		}
 		unlockState(lock)
-		a.log("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "lease journal records an interrupted release without a recoverable result"})
+		a.logWarning("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "lease journal records an interrupted release without a recoverable result"})
 		return nil
 	}
 	if active.State != "active" && active.State != "recovery-required" {
@@ -724,7 +724,7 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 			return err
 		}
 		unlockState(lock)
-		a.log("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "expired lease identity is incomplete or invalid"})
+		a.logWarning("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "expired lease identity is incomplete or invalid"})
 		return nil
 	}
 	if reconciliationAttempt {
@@ -753,7 +753,7 @@ func (a *Agent) enforceLeaseExpiry(ctx context.Context) error {
 		},
 	}
 	if err := validateV2LeaseRequest(request, issuedAt); err != nil {
-		a.log("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "constructed recovery Release request is invalid"})
+		a.logWarning("lease-expiry-reconciliation-required", map[string]any{"leaseId": active.LeaseID, "generation": active.Generation, "reason": "constructed recovery Release request is invalid"})
 		return nil
 	}
 	result := a.executeLeaseRequest(ctx, request)

@@ -35,6 +35,15 @@ type Agent struct {
 	secretProbe                   func() bool
 	mu                            sync.Mutex
 	disconnectMu                  sync.Mutex
+	logMu                         sync.Mutex
+	logSupervisorOnce             sync.Once
+	logToSupervisor               bool
+	logWarnings                   map[string]logWarningState
+	lastLogPrune                  time.Time
+	heartbeatLogMu                sync.Mutex
+	lastHeartbeatLog              time.Time
+	lastHeartbeatReady            bool
+	heartbeatLogInitialized       bool
 }
 
 type Result struct {
@@ -576,7 +585,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 			graceSeconds = 30
 		}
 		if err := a.hostRuntime().NotifyLocalUsers(guardOptions.Message); err != nil {
-			a.log("prepare-local-session-notification-failed", map[string]any{"error": err.Error()})
+			a.logError("prepare-local-session-notification-failed", map[string]any{"error": err.Error()})
 			return 2, "", "unable to notify local users; no session was released", map[string]any{"code": "STATION_SESSION_NOTIFICATION_FAILED", "retryable": true, "cleanupSkipped": true}
 		}
 		if err := a.waitSessionGrace(ctx, graceSeconds); err != nil {
@@ -767,7 +776,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 	if a.Config.Profile != "fmu-only" {
 		if err := a.cleanFMUExecutorState(ctx); err != nil {
 			cleanupWarnings = append(cleanupWarnings, "FMU Executor state could not be fully cleaned")
-			a.log("prepare-cleanup-warning", map[string]any{"error": err.Error()})
+			a.logWarning("prepare-cleanup-warning", map[string]any{"error": err.Error()})
 		}
 		cleanWorkData := a.cleanWorkData
 		var cleanupErr error
@@ -778,7 +787,7 @@ func (a *Agent) prepare(ctx context.Context, args []string) (int, string, string
 		}
 		if cleanupErr != nil {
 			cleanupWarnings = append(cleanupWarnings, "Tiny Desk working data could not be fully cleaned")
-			a.log("prepare-cleanup-warning", map[string]any{"error": cleanupErr.Error()})
+			a.logWarning("prepare-cleanup-warning", map[string]any{"error": cleanupErr.Error()})
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -1127,7 +1136,7 @@ func (a *Agent) release(ctx context.Context, args []string) (int, string, string
 	}
 	fmuCleanupAttempted = true
 	if err := a.cleanFMUExecutorState(ctx); err != nil {
-		a.log("release-fmu-cleanup-failed", map[string]any{"error": err.Error()})
+		a.logError("release-fmu-cleanup-failed", map[string]any{"error": err.Error()})
 		if reboot {
 			rebootDeferred = true
 			rebootReason = "FMU Executor cleanup failed"

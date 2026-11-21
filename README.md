@@ -151,6 +151,7 @@ suite on Ubuntu for Go 1.23 and the current stable release.
 |---|---|
 | Documentation navigation | [Contents](SUMMARY.md) |
 | Installation, Gateway onboarding, and recovery | [Linux operator runbook](docs/operator-runbook.md) |
+| Operational logs | [Shared log format, detail, rotation, and retention](docs/logging-policy.md) |
 | Station contract and shared test scenarios | [Station Contract](contracts/README.md) |
 | FMU Executor bundle, model contents, build, signing, release, and rollback | [Linux release packaging](packaging/README.md) |
 | Shared FMU Executor behavior and API | [FMU Executor repository](https://github.com/DecentraLabsCom/FMU-Executor) |

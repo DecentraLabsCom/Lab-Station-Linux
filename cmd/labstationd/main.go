@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,13 +17,14 @@ func main() {
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "labstationd configuration is invalid: %v\n", err)
+		agent.LogStartupFailure(config.Defaults(), "daemon-configuration-invalid", err)
 		os.Exit(2)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	if err := agent.New(cfg).Run(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "labstationd stopped with an error: %v\n", err)
+	station := agent.New(cfg)
+	if err := station.Run(ctx); err != nil {
+		station.LogProcessFailure("daemon-stopped-with-error", err)
 		os.Exit(2)
 	}
 }
